@@ -287,6 +287,7 @@ _import_structure = {
     ],
     "models.deprecated.mmbt": ["MMBTConfig"],
     "models.deprecated.open_llama": ["OPEN_LLAMA_PRETRAINED_CONFIG_ARCHIVE_MAP", "OpenLlamaConfig"],
+    "models.deprecated.zebra": ["ZEBRA_PRETRAINED_CONFIG_ARCHIVE_MAP", "ZebraConfig"],
     "models.deprecated.retribert": [
         "RETRIBERT_PRETRAINED_CONFIG_ARCHIVE_MAP",
         "RetriBertConfig",
@@ -416,6 +417,8 @@ _import_structure = {
     "models.levit": ["LEVIT_PRETRAINED_CONFIG_ARCHIVE_MAP", "LevitConfig"],
     "models.lilt": ["LILT_PRETRAINED_CONFIG_ARCHIVE_MAP", "LiltConfig"],
     "models.llama": ["LLAMA_PRETRAINED_CONFIG_ARCHIVE_MAP", "LlamaConfig"],
+    "models.zebra": ["ZEBRA_PRETRAINED_CONFIG_ARCHIVE_MAP", "ZebraConfig"],
+
     "models.longformer": ["LONGFORMER_PRETRAINED_CONFIG_ARCHIVE_MAP", "LongformerConfig", "LongformerTokenizer"],
     "models.longt5": ["LONGT5_PRETRAINED_CONFIG_ARCHIVE_MAP", "LongT5Config"],
     "models.luke": ["LUKE_PRETRAINED_CONFIG_ARCHIVE_MAP", "LukeConfig", "LukeTokenizer"],
@@ -808,6 +811,7 @@ else:
     _import_structure["models.gpt_sw3"].append("GPTSw3Tokenizer")
     _import_structure["models.layoutxlm"].append("LayoutXLMTokenizer")
     _import_structure["models.llama"].append("LlamaTokenizer")
+    _import_structure["models.zebra"].append("ZebraTokenizer")
     _import_structure["models.m2m_100"].append("M2M100Tokenizer")
     _import_structure["models.marian"].append("MarianTokenizer")
     _import_structure["models.mbart"].append("MBartTokenizer")
@@ -874,6 +878,7 @@ else:
     _import_structure["models.layoutxlm"].append("LayoutXLMTokenizerFast")
     _import_structure["models.led"].append("LEDTokenizerFast")
     _import_structure["models.llama"].append("LlamaTokenizerFast")
+    _import_structure["models.zebra"].append("ZebraTokenizerFast")
     _import_structure["models.longformer"].append("LongformerTokenizerFast")
     _import_structure["models.lxmert"].append("LxmertTokenizerFast")
     _import_structure["models.markuplm"].append("MarkupLMTokenizerFast")
@@ -2114,6 +2119,9 @@ else:
     )
     _import_structure["models.llama"].extend(
         ["LlamaForCausalLM", "LlamaForSequenceClassification", "LlamaModel", "LlamaPreTrainedModel"]
+    )
+    _import_structure["models.zebra"].extend(
+        ["ZebraForCausalLM", "ZebraForSequenceClassification", "ZebraModel", "ZebraPreTrainedModel"]
     )
     _import_structure["models.longformer"].extend(
         [
@@ -4598,6 +4606,7 @@ if TYPE_CHECKING:
     from .models.levit import LEVIT_PRETRAINED_CONFIG_ARCHIVE_MAP, LevitConfig
     from .models.lilt import LILT_PRETRAINED_CONFIG_ARCHIVE_MAP, LiltConfig
     from .models.llama import LLAMA_PRETRAINED_CONFIG_ARCHIVE_MAP, LlamaConfig
+    from .models.zebra import ZEBRA_PRETRAINED_CONFIG_ARCHIVE_MAP, ZebraConfig
     from .models.longformer import LONGFORMER_PRETRAINED_CONFIG_ARCHIVE_MAP, LongformerConfig, LongformerTokenizer
     from .models.longt5 import LONGT5_PRETRAINED_CONFIG_ARCHIVE_MAP, LongT5Config
     from .models.luke import LUKE_PRETRAINED_CONFIG_ARCHIVE_MAP, LukeConfig, LukeTokenizer
@@ -4963,6 +4972,7 @@ if TYPE_CHECKING:
         from .models.gpt_sw3 import GPTSw3Tokenizer
         from .models.layoutxlm import LayoutXLMTokenizer
         from .models.llama import LlamaTokenizer
+        from .models.zebra import ZebraTokenizer
         from .models.m2m_100 import M2M100Tokenizer
         from .models.marian import MarianTokenizer
         from .models.mbart import MBart50Tokenizer, MBartTokenizer
@@ -5021,6 +5031,7 @@ if TYPE_CHECKING:
         from .models.layoutxlm import LayoutXLMTokenizerFast
         from .models.led import LEDTokenizerFast
         from .models.llama import LlamaTokenizerFast
+        from .models.zebra import ZebraTokenizerFast
         from .models.longformer import LongformerTokenizerFast
         from .models.lxmert import LxmertTokenizerFast
         from .models.markuplm import MarkupLMTokenizerFast
@@ -5648,6 +5659,8 @@ if TYPE_CHECKING:
             OpenLlamaModel,
             OpenLlamaPreTrainedModel,
         )
+
+        
         from .models.deprecated.retribert import (
             RETRIBERT_PRETRAINED_MODEL_ARCHIVE_LIST,
             RetriBertModel,
@@ -6048,6 +6061,7 @@ if TYPE_CHECKING:
             LiltPreTrainedModel,
         )
         from .models.llama import LlamaForCausalLM, LlamaForSequenceClassification, LlamaModel, LlamaPreTrainedModel
+        from .models.zebra import ZebraForCausalLM, ZebraForSequenceClassification, ZebraModel, ZebraPreTrainedModel
         from .models.longformer import (
             LONGFORMER_PRETRAINED_MODEL_ARCHIVE_LIST,
             LongformerForMaskedLM,

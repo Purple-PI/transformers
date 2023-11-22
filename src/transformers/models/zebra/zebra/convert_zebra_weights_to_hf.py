@@ -20,7 +20,7 @@ import warnings
 
 import torch
 
-from transformers import ZebraConfig, ZebraForCausalLM, ZebraTokenizer
+from transformers import ZebraConfig, ZebraForCausalLM, ZebraTokenizer, ZebraForMaskedLM
 
 
 try:

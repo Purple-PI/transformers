@@ -23,7 +23,7 @@ from ...utils import (
 
 
 _import_structure = {
-    "configuration_zebra": ["ZEBRA_PRETRAINED_CONFIG_ARCHIVE_MAP", "ZebraConfig"],
+    "configuration_zebra": ["ZEBRA_PRETRAINED_CONFIG_ARCHIVE_MAP", "ZebraConfig","ZebraMLMConfig"],
 }
 
 try:
@@ -41,7 +41,6 @@ except OptionalDependencyNotAvailable:
     pass
 else:
     _import_structure["tokenization_zebra_fast"] = ["ZebraTokenizerFast"]
-
 try:
     if not is_torch_available():
         raise OptionalDependencyNotAvailable()
@@ -50,6 +49,7 @@ except OptionalDependencyNotAvailable:
 else:
     _import_structure["modeling_zebra"] = [
         "ZebraForCausalLM",
+        "ZebraForMaskedLM",
         "ZebraModel",
         "ZebraPreTrainedModel",
         "ZebraForSequenceClassification",
@@ -57,7 +57,7 @@ else:
 
 
 if TYPE_CHECKING:
-    from .configuration_zebra import ZEBRA_PRETRAINED_CONFIG_ARCHIVE_MAP, ZebraConfig
+    from .configuration_zebra import ZEBRA_PRETRAINED_CONFIG_ARCHIVE_MAP, ZebraConfig , ZebraMLMConfig
 
     try:
         if not is_sentencepiece_available():
@@ -81,7 +81,7 @@ if TYPE_CHECKING:
     except OptionalDependencyNotAvailable:
         pass
     else:
-        from .modeling_zebra import ZebraForCausalLM, ZebraForSequenceClassification, ZebraModel, ZebraPreTrainedModel
+        from .modeling_zebra import ZebraForCausalLM, ZebraForMaskedLM, ZebraForSequenceClassification, ZebraModel, ZebraPreTrainedModel
 
 
 else:

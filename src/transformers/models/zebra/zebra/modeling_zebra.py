@@ -28,7 +28,7 @@ from torch import nn
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 
 from ...activations import ACT2FN
-from ...modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast, SequenceClassifierOutputWithPast
+from ...modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast, SequenceClassifierOutputWithPast, MaskedLMOutput
 from ...modeling_utils import PreTrainedModel
 from ...pytorch_utils import ALL_LAYERNORM_LAYERS
 from ...utils import (
@@ -60,6 +60,14 @@ def _get_unpad_data(padding_mask):
         cu_seqlens,
         max_seqlen_in_batch,
     )
+
+
+
+
+def _make_bidirectional_mask(input_ids, pad_token_id):
+    # Create a mask of 1s for each token followed by 0s for padding
+    attention_mask = (input_ids != pad_token_id).type(torch.float)
+    return attention_mask
 
 
 # Copied from transformers.models.bart.modeling_bart._make_causal_mask
@@ -788,7 +796,7 @@ class ZebraModel(ZebraPreTrainedModel):
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.layers = nn.ModuleList([ZebraDecoderLayer(config) for _ in range(config.num_hidden_layers)])
         self.norm = ZebraRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-
+        self.bidirectional = config.bidirectional
         self.gradient_checkpointing = False
         # Initialize weights and apply final processing
         self.post_init()
@@ -799,29 +807,50 @@ class ZebraModel(ZebraPreTrainedModel):
     def set_input_embeddings(self, value):
         self.embed_tokens = value
 
-    # Copied from transformers.models.bart.modeling_bart.BartDecoder._prepare_decoder_attention_mask
     def _prepare_decoder_attention_mask(self, attention_mask, input_shape, inputs_embeds, past_key_values_length):
-        # create causal mask
-        # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
-        combined_attention_mask = None
-        if input_shape[-1] > 1:
-            combined_attention_mask = _make_causal_mask(
-                input_shape,
-                inputs_embeds.dtype,
-                device=inputs_embeds.device,
-                past_key_values_length=past_key_values_length,
-            )
+        if self.bidirectional:
+            # For bidirectional models, use a different mask that doesn't enforce causality
+            expanded_attn_mask = _expand_mask(attention_mask, inputs_embeds.dtype, tgt_len=input_shape[-1]).to(inputs_embeds.device)
+            return expanded_attn_mask
+        else:
+            # For autoregressive models, use the causal mask
+            combined_attention_mask = None
+            if input_shape[-1] > 1:
+                combined_attention_mask = _make_causal_mask(
+                    input_shape,
+                    inputs_embeds.dtype,
+                    device=inputs_embeds.device,
+                    past_key_values_length=past_key_values_length,
+                )
 
-        if attention_mask is not None:
-            # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
-            expanded_attn_mask = _expand_mask(attention_mask, inputs_embeds.dtype, tgt_len=input_shape[-1]).to(
-                inputs_embeds.device
-            )
-            combined_attention_mask = (
-                expanded_attn_mask if combined_attention_mask is None else expanded_attn_mask + combined_attention_mask
-            )
+            if attention_mask is not None:
+                expanded_attn_mask = _expand_mask(attention_mask, inputs_embeds.dtype, tgt_len=input_shape[-1]).to(inputs_embeds.device)
+                combined_attention_mask = (
+                    expanded_attn_mask if combined_attention_mask is None else expanded_attn_mask + combined_attention_mask
+                )
+            return combined_attention_mask
+    # # Copied from transformers.models.bart.modeling_bart.BartDecoder._prepare_decoder_attention_mask
+    # def _prepare_decoder_attention_mask(self, attention_mask, input_shape, inputs_embeds, past_key_values_length):
+    #     # create causal mask
+    #     # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
+    #     combined_attention_mask = None
+    #     if input_shape[-1] > 1:
+    #         combined_attention_mask = _make_causal_mask(
+    #             input_shape,
+    #             inputs_embeds.dtype,
+    #             device=inputs_embeds.device,
+    #             past_key_values_length=past_key_values_length,
+    #         )
 
-        return combined_attention_mask
+    #     if attention_mask is not None:
+    #         # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
+    #         expanded_attn_mask = _expand_mask(attention_mask, inputs_embeds.dtype, tgt_len=input_shape[-1]).to(
+    #             inputs_embeds.device
+    #         )
+    #         combined_attention_mask = (
+    #             expanded_attn_mask if combined_attention_mask is None else expanded_attn_mask + combined_attention_mask
+    #         )
+    #     return combined_attention_mask
 
     @add_start_docstrings_to_model_forward(ZEBRA_INPUTS_DOCSTRING)
     def forward(
@@ -1210,6 +1239,7 @@ class ZebraForMaskedLM(ZebraPreTrainedModel):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
+            
         )
 
         hidden_states = outputs[0]

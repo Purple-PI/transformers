@@ -18,7 +18,7 @@
 # to defer the actual importing for when the objects are requested. This way `import transformers` provides the names
 # in the namespace without actually importing anything (and especially none of the backends).
 
-__version__ = "4.36.0.dev0"
+__version__ = "4.35.2"
 
 from typing import TYPE_CHECKING
 
@@ -417,7 +417,7 @@ _import_structure = {
     "models.levit": ["LEVIT_PRETRAINED_CONFIG_ARCHIVE_MAP", "LevitConfig"],
     "models.lilt": ["LILT_PRETRAINED_CONFIG_ARCHIVE_MAP", "LiltConfig"],
     "models.llama": ["LLAMA_PRETRAINED_CONFIG_ARCHIVE_MAP", "LlamaConfig"],
-    "models.zebra": ["ZEBRA_PRETRAINED_CONFIG_ARCHIVE_MAP", "ZebraConfig","ZebraMLMConfig"],
+    "models.zebra": ["ZEBRA_PRETRAINED_CONFIG_ARCHIVE_MAP", "ZebraConfig","ZebraMLMConfig", "ZebraInfiniteConfig"],
 
     "models.longformer": ["LONGFORMER_PRETRAINED_CONFIG_ARCHIVE_MAP", "LongformerConfig", "LongformerTokenizer"],
     "models.longt5": ["LONGT5_PRETRAINED_CONFIG_ARCHIVE_MAP", "LongT5Config"],
@@ -2121,7 +2121,7 @@ else:
         ["LlamaForCausalLM", "LlamaForSequenceClassification", "LlamaModel", "LlamaPreTrainedModel"]
     )
     _import_structure["models.zebra"].extend(
-        ["ZebraForCausalLM", "ZebraForSequenceClassification", "ZebraModel", "ZebraPreTrainedModel", "ZebraForMaskedLM"]
+        ["ZebraForCausalLM", "ZebraInfiniteForCausalLM", "ZebraForSequenceClassification", "ZebraModel", "ZebraPreTrainedModel", "ZebraForMaskedLM"]
     )
     _import_structure["models.longformer"].extend(
         [
@@ -4606,7 +4606,7 @@ if TYPE_CHECKING:
     from .models.levit import LEVIT_PRETRAINED_CONFIG_ARCHIVE_MAP, LevitConfig
     from .models.lilt import LILT_PRETRAINED_CONFIG_ARCHIVE_MAP, LiltConfig
     from .models.llama import LLAMA_PRETRAINED_CONFIG_ARCHIVE_MAP, LlamaConfig
-    from .models.zebra import ZEBRA_PRETRAINED_CONFIG_ARCHIVE_MAP, ZebraConfig, ZebraMLMConfig
+    from .models.zebra import ZEBRA_PRETRAINED_CONFIG_ARCHIVE_MAP, ZebraConfig, ZebraMLMConfig, ZebraInfiniteConfig
     from .models.longformer import LONGFORMER_PRETRAINED_CONFIG_ARCHIVE_MAP, LongformerConfig, LongformerTokenizer
     from .models.longt5 import LONGT5_PRETRAINED_CONFIG_ARCHIVE_MAP, LongT5Config
     from .models.luke import LUKE_PRETRAINED_CONFIG_ARCHIVE_MAP, LukeConfig, LukeTokenizer
@@ -6061,7 +6061,7 @@ if TYPE_CHECKING:
             LiltPreTrainedModel,
         )
         from .models.llama import LlamaForCausalLM, LlamaForSequenceClassification, LlamaModel, LlamaPreTrainedModel
-        from .models.zebra import ZebraForCausalLM, ZebraForSequenceClassification, ZebraModel, ZebraPreTrainedModel, ZebraForMaskedLM
+        from .models.zebra import ZebraForCausalLM,ZebraInfiniteForCausalLM, ZebraForSequenceClassification, ZebraModel, ZebraPreTrainedModel, ZebraForMaskedLM
         from .models.longformer import (
             LONGFORMER_PRETRAINED_MODEL_ARCHIVE_LIST,
             LongformerForMaskedLM,

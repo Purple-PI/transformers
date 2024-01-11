@@ -23,7 +23,7 @@ from ...utils import (
 
 
 _import_structure = {
-    "configuration_zebra": ["ZEBRA_PRETRAINED_CONFIG_ARCHIVE_MAP", "ZebraConfig","ZebraMLMConfig"],
+    "configuration_zebra": ["ZEBRA_PRETRAINED_CONFIG_ARCHIVE_MAP", "ZebraConfig","ZebraMLMConfig","ZebraInfiniteConfig"],
 }
 
 try:
@@ -50,6 +50,7 @@ else:
     _import_structure["modeling_zebra"] = [
         "ZebraForCausalLM",
         "ZebraForMaskedLM",
+        "ZebraInfiniteForCausalLM",
         "ZebraModel",
         "ZebraPreTrainedModel",
         "ZebraForSequenceClassification",
@@ -57,7 +58,7 @@ else:
 
 
 if TYPE_CHECKING:
-    from .configuration_zebra import ZEBRA_PRETRAINED_CONFIG_ARCHIVE_MAP, ZebraConfig , ZebraMLMConfig
+    from .configuration_zebra import ZEBRA_PRETRAINED_CONFIG_ARCHIVE_MAP, ZebraConfig , ZebraMLMConfig, ZebraInfiniteConfig
 
     try:
         if not is_sentencepiece_available():
@@ -81,7 +82,7 @@ if TYPE_CHECKING:
     except OptionalDependencyNotAvailable:
         pass
     else:
-        from .modeling_zebra import ZebraForCausalLM, ZebraForMaskedLM, ZebraForSequenceClassification, ZebraModel, ZebraPreTrainedModel
+        from .modeling_zebra import ZebraForCausalLM, ZebraInfiniteForCausalLM, ZebraForMaskedLM, ZebraForSequenceClassification, ZebraModel, ZebraPreTrainedModel
 
 
 else:

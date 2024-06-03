@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from . import (
+    zebra_mlm,
     albert,
     align,
     altclip,

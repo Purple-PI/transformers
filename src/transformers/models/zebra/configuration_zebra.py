@@ -129,6 +129,8 @@ class ZebraConfig(PretrainedConfig):
         rope_scaling=None,
         attention_bias=False,
         bidirectional = False,
+        latent_size=16,
+        num_mixtures=4,
 
         **kwargs,
     ):
@@ -153,6 +155,8 @@ class ZebraConfig(PretrainedConfig):
         self.rope_scaling = rope_scaling
         self._rope_scaling_validation()
         self.attention_bias = attention_bias
+        self.latent_size = latent_size
+        self.num_mixtures = num_mixtures
 
         super().__init__(
             pad_token_id=pad_token_id,

@@ -49,6 +49,9 @@ except OptionalDependencyNotAvailable:
 else:
     _import_structure["modeling_zebra"] = [
         "ZebraForCausalLM",
+        "ZebraInfiniteForCausalLM",
+        "ZebraInfiniteForCausalLMv2",
+        "ZebraInfiniteForCausalLMmixed",
         "ZebraForMaskedLM",
         "ZebraModel",
         "ZebraPreTrainedModel",
@@ -81,7 +84,7 @@ if TYPE_CHECKING:
     except OptionalDependencyNotAvailable:
         pass
     else:
-        from .modeling_zebra import ZebraForCausalLM, ZebraForMaskedLM, ZebraForSequenceClassification, ZebraModel, ZebraPreTrainedModel
+        from .modeling_zebra import ZebraInfiniteForCausalLMmixed, ZebraInfiniteForCausalLMv2, ZebraInfiniteForCausalLM, ZebraForCausalLM, ZebraForMaskedLM, ZebraForSequenceClassification, ZebraModel, ZebraPreTrainedModel
 
 
 else:

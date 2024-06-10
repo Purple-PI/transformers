@@ -239,4 +239,5 @@ from . import (
     xmod,
     yolos,
     yoso,
+    zebra,
 )

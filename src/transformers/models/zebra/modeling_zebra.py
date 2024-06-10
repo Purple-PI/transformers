@@ -22,6 +22,7 @@ import math
 from typing import List, Optional, Tuple, Union
 
 import torch
+import torch.distributions as dist
 import torch.nn.functional as F
 import torch.utils.checkpoint
 from torch import nn
@@ -610,8 +611,8 @@ class ZebraDecoderLayer(nn.Module):
             else ZebraFlashAttention2(config=config)
         )
         self.mlp = ZebraMLP(config)
-        self.input_layernorm = ZebraRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = ZebraRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.input_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps) #ZebraRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps) #ZebraRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
     def forward(
         self,
@@ -683,8 +684,8 @@ class ZebraDecoderLayer2(nn.Module):
             else ZebraFlashAttention2(config=config)
         )
         self.mlp = ZebraMLP(config)
-        self.input_layernorm = ZebraRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = ZebraRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.input_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps) #ZebraRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps) #ZebraRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.gate_attn = nn.Sequential(nn.ReLU(), nn.Linear(config.hidden_size, config.hidden_size, bias=False))
         self.gate_mlp = nn.Sequential(nn.ReLU(), nn.Linear(config.hidden_size, config.hidden_size, bias=False)) 
 
@@ -796,8 +797,8 @@ class ZebraDecoderLayer3(nn.Module):
             else ZebraFlashAttention2(config=config)
         )
         self.mlp = ZebraMLP(config)
-        self.input_layernorm = ZebraRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = ZebraRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.input_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps) #ZebraRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps) #ZebraRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.gate_attn = nn.Sequential(nn.ReLU(), nn.Linear(config.hidden_size, config.hidden_size, bias=False))
         self.gate_mlp = nn.Sequential(nn.ReLU(), nn.Linear(config.hidden_size, config.hidden_size, bias=False)) 
 
@@ -898,6 +899,192 @@ class ZebraDecoderLayer3(nn.Module):
             outputs += (present_key_value,)
 
         return outputs
+    
+
+
+
+
+class ZebraDecoderLayer4(nn.Module):
+    def __init__(self, config: ZebraConfig):
+        super().__init__()
+        self.hidden_size = config.hidden_size
+        self.self_attn = (
+            ZebraAttention(config=config)
+            if not getattr(config, "_flash_attn_2_enabled", False)
+            else ZebraFlashAttention2(config=config)
+        )
+        self.mlp = ZebraMLP(config)
+        self.input_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps) #ZebraRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps) #ZebraRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.gate_attn = nn.Sequential(nn.ReLU(), nn.Linear(config.hidden_size, config.hidden_size, bias=False))
+        self.gate_mlp = nn.Sequential(nn.ReLU(), nn.Linear(config.hidden_size, config.hidden_size, bias=False)) 
+
+        self.shift_mlp = nn.Sequential(nn.ReLU(), nn.Linear(config.hidden_size, config.hidden_size, bias=True))
+        self.shift_attn = nn.Sequential(nn.ReLU(), nn.Linear(config.hidden_size, config.hidden_size, bias=True)) 
+
+        self.scale_attn = nn.Sequential(nn.ReLU(), nn.Linear(config.hidden_size, config.hidden_size, bias=True))
+        self.scale_mlp = nn.Sequential(nn.ReLU(), nn.Linear(config.hidden_size, config.hidden_size, bias=True))
+
+
+        nn.init.constant_(self.gate_attn[1].weight, 0)
+        #nn.init.constant_(self.gate_attn[1].bias, 0)
+
+        nn.init.constant_(self.gate_mlp[1].weight, 0)
+        #nn.init.constant_(self.gate_mlp[1].bias, 0)
+
+        nn.init.constant_(self.shift_mlp[1].weight, 0)
+        nn.init.constant_(self.shift_mlp[1].bias, 0)
+
+        nn.init.constant_(self.shift_attn[1].weight, 0)
+        nn.init.constant_(self.shift_attn[1].bias, 0)
+
+        nn.init.constant_(self.scale_attn[1].weight, 0)
+        nn.init.constant_(self.scale_attn[1].bias, 0)
+
+        nn.init.constant_(self.scale_mlp[1].weight, 0)
+        nn.init.constant_(self.scale_mlp[1].bias, 0)
+
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_value: Optional[Tuple[torch.Tensor]] = None,
+        output_attentions: Optional[bool] = False,
+        use_cache: Optional[bool] = False,
+        padding_mask: Optional[torch.LongTensor] = None,
+        conditioning: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
+        """
+        Args:
+            hidden_states (`torch.FloatTensor`): input to the layer of shape `(batch, seq_len, embed_dim)`
+            attention_mask (`torch.FloatTensor`, *optional*): attention mask of size
+                `(batch, 1, tgt_len, src_len)` where padding elements are indicated by very large negative values.
+            output_attentions (`bool`, *optional*):
+                Whether or not to return the attentions tensors of all attention layers. See `attentions` under
+                returned tensors for more detail.
+            use_cache (`bool`, *optional*):
+                If set to `True`, `past_key_values` key value states are returned and can be used to speed up decoding
+                (see `past_key_values`).
+            past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
+        """
+
+        residual = hidden_states
+
+        alpha1 = self.scale_attn(conditioning)
+        beta1 = self.shift_attn(conditioning)
+        gamma1 = self.gate_attn(conditioning)
+
+        alpha2 = self.scale_mlp(conditioning)
+        beta2 = self.shift_mlp(conditioning)
+        gamma2 = self.gate_mlp(conditioning)
+
+
+        hidden_states = modulate(self.input_layernorm(hidden_states), beta1, alpha1)
+
+        # Self Attention
+        hidden_states, self_attn_weights, present_key_value = self.self_attn(
+            hidden_states=hidden_states,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_value=past_key_value,
+            output_attentions=output_attentions,
+            use_cache=use_cache,
+            padding_mask=padding_mask,
+        )
+        hidden_states = gamma1 * (residual + hidden_states)
+
+        # Fully Connected
+        residual = hidden_states
+        hidden_states = modulate(self.post_attention_layernorm(hidden_states), beta2, alpha2)
+        hidden_states = self.mlp(hidden_states)
+        hidden_states = gamma2 *(residual + hidden_states)
+        #print('mlp', hidden_states[..., -1, :].std()) 
+        #hidden_states = self.post_attention_layernorm(hidden_states)
+        #print('layernorm2', hidden_states[..., -1, :].std()) 
+
+        outputs = (hidden_states,)
+
+        if output_attentions:
+            outputs += (self_attn_weights,)
+
+        if use_cache:
+            outputs += (present_key_value,)
+
+        return outputs
+
+
+
+class ZebraDecoderLayer5(nn.Module):
+    def __init__(self, config: ZebraConfig):
+        super().__init__()
+        self.hidden_size = config.hidden_size
+        self.self_attn = (
+            ZebraAttention(config=config)
+            if not getattr(config, "_flash_attn_2_enabled", False)
+            else ZebraFlashAttention2(config=config)
+        )
+        self.mlp = ZebraMLP(config)
+        self.input_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps) #ZebraRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps) #ZebraRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_value: Optional[Tuple[torch.Tensor]] = None,
+        output_attentions: Optional[bool] = False,
+        use_cache: Optional[bool] = False,
+        padding_mask: Optional[torch.LongTensor] = None,
+    ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
+        """
+        Args:
+            hidden_states (`torch.FloatTensor`): input to the layer of shape `(batch, seq_len, embed_dim)`
+            attention_mask (`torch.FloatTensor`, *optional*): attention mask of size
+                `(batch, 1, tgt_len, src_len)` where padding elements are indicated by very large negative values.
+            output_attentions (`bool`, *optional*):
+                Whether or not to return the attentions tensors of all attention layers. See `attentions` under
+                returned tensors for more detail.
+            use_cache (`bool`, *optional*):
+                If set to `True`, `past_key_values` key value states are returned and can be used to speed up decoding
+                (see `past_key_values`).
+            past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
+        """
+
+        residual = hidden_states
+
+        #hidden_states = self.input_layernorm(hidden_states)
+
+        # Self Attention
+        hidden_states, self_attn_weights, present_key_value = self.self_attn(
+            hidden_states=hidden_states,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_value=past_key_value,
+            output_attentions=output_attentions,
+            use_cache=use_cache,
+            padding_mask=padding_mask,
+        )
+        hidden_states = residual + hidden_states
+
+        # Fully Connected
+        residual = hidden_states
+        #hidden_states = self.post_attention_layernorm(hidden_states)
+        hidden_states = self.mlp(hidden_states)
+        hidden_states = residual + hidden_states
+
+        outputs = (hidden_states,)
+
+        if output_attentions:
+            outputs += (self_attn_weights,)
+
+        if use_cache:
+            outputs += (present_key_value,)
+
+        return outputs
+
 
 
 
@@ -1034,7 +1221,7 @@ class ZebraModel(ZebraPreTrainedModel):
 
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.layers = nn.ModuleList([ZebraDecoderLayer(config) for _ in range(config.num_hidden_layers)])
-        self.norm = ZebraRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.norm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps) #ZebraRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.bidirectional = config.bidirectional
         self.gradient_checkpointing = False
         # Initialize weights and apply final processing
@@ -1751,7 +1938,7 @@ class ZebraInfiniteModel(ZebraPreTrainedModel):
                                         nn.Linear(config.hidden_size, config.hidden_size))
         self.embed_tokens = nn.Linear(config.latent_size, config.hidden_size)
         self.layers = nn.ModuleList([ZebraDecoderLayer(config) for _ in range(config.num_hidden_layers)])
-        self.norm = ZebraRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.norm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps) #ZebraRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.bidirectional = config.bidirectional
         self.gradient_checkpointing = False
         # Initialize weights and apply final processing
@@ -2262,6 +2449,7 @@ class ZebraInfiniteForCausalLMv2(ZebraPreTrainedModel):
         return_dict: Optional[bool] = None,
         mu: torch.Tensor = None,
         sigma: torch.Tensor = None,
+        patch_size=10,
 
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         r"""
@@ -2363,8 +2551,8 @@ class ZebraInfiniteForCausalLMv2(ZebraPreTrainedModel):
             if use_rel_loss:
                 pred = torch.cat([input_ids[:, :1, :], shift_means[..., 0]], axis=1)
                 shift_labels = torch.cat([input_ids[:, :1, :], shift_labels], axis=1)
-                pred = rearrange(pred, 'b (t l) c -> (b t) (l c)', l=16) 
-                shift_labels = rearrange(shift_labels, 'b (t l) c -> (b t) (l c)', l=16) 
+                pred = rearrange(pred, 'b (t l) c -> (b t) (l c)', l=patch_size) 
+                shift_labels = rearrange(shift_labels, 'b (t l) c -> (b t) (l c)', l=patch_size) 
                 loss = self.rel_loss(pred, shift_labels)
             else: 
                 loss = ((shift_means[..., 0] - shift_labels)**2).mean()
@@ -2428,7 +2616,7 @@ class ZebraInfiniteModelv2(ZebraPreTrainedModel):
         self.latent_size = config.latent_size
         self.embed_tokens = nn.Linear(config.latent_size, config.hidden_size, bias=False)
         self.layers = nn.ModuleList([ZebraDecoderLayer2(config) for _ in range(config.num_hidden_layers)])
-        self.norm = ZebraRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.norm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps) #ZebraRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.bidirectional = config.bidirectional
         self.gradient_checkpointing = False
         # Initialize weights and apply final processing
@@ -2636,9 +2824,11 @@ class ZebraInfiniteForCausalLMmixed(ZebraPreTrainedModel):
         self.num_mixtures = config.num_mixtures
         self.vocab_size = config.vocab_size
         
-        self.mean_head = nn.Linear(config.hidden_size, (self.latent_size + 1) * self.num_mixtures, bias=True) #bias=False
-        self.variance_head = nn.Linear(config.hidden_size, (self.latent_size + 1) * self.num_mixtures, bias=True)
-        self.mix_prob_head = nn.Linear(config.hidden_size, (self.latent_size + 1) * self.num_mixtures, bias=True)
+        self.mean_head = nn.Linear(config.hidden_size, (self.latent_size) * self.num_mixtures, bias=False) #bias=False
+        self.variance_head = nn.Linear(config.hidden_size, (self.latent_size) * self.num_mixtures, bias=False)
+        self.mix_prob_head = nn.Linear(config.hidden_size, self.num_mixtures, bias=True)
+        self.norm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps) #ZebraRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        #self.mix_prob_head = nn.Linear(config.hidden_size, (self.latent_size) * self.num_mixtures, bias=True)
 
         self.softplus = torch.nn.Softplus()
         self.vocab_head = nn.Linear(config.hidden_size, self.vocab_size, bias=True)
@@ -2668,7 +2858,7 @@ class ZebraInfiniteForCausalLMmixed(ZebraPreTrainedModel):
     @replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
     def forward(
         self,
-        input_ids: torch.LongTensor = None,
+        input_ids: torch.FloatTensor = None,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         past_key_values: Optional[List[torch.FloatTensor]] = None,
@@ -2681,6 +2871,8 @@ class ZebraInfiniteForCausalLMmixed(ZebraPreTrainedModel):
         scale_tokens: torch.Tensor = None,
         mu_tokens: torch.Tensor = None,
         weight_logits=1.0,
+        patch_size=10,
+        use_variance=False,
 
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         r"""
@@ -2733,6 +2925,9 @@ class ZebraInfiniteForCausalLMmixed(ZebraPreTrainedModel):
         )
 
         hidden_states = outputs[0]
+        hidden_states = self.norm(hidden_states) # v0
+         
+
         #if mu is not None:
         #    hidden_states = hidden_states[:, 1:, : ] # we remove the mu token
         #if sigma is not None:
@@ -2742,15 +2937,18 @@ class ZebraInfiniteForCausalLMmixed(ZebraPreTrainedModel):
         batch, seqlen , dim = input_ids.shape
         means = self.mean_head(hidden_states)
         scales =self.variance_head(hidden_states)  # Ensure scales are positive
-        mix_probs = self.mix_prob_head(hidden_states) # Ensure mixture probabilities sum to 1
+        mix_probs = torch.clamp(self.mix_prob_head(hidden_states), -10, 10) # v0
+        #mix_probs = torch.clamp(self.mix_prob_head(self.norm(hidden_states)), -10, 10) # v1
+        #hidden_states = self.norm(hidden_states) # v0
         logits_vocab = self.vocab_head(hidden_states)
 
         # Reshape the outputs to [batch_size, seq_length, d, k]
-        means = means.view(batch, seqlen, self.latent_size + 1, self.num_mixtures)
-        scales =  self.softplus(scales.view(batch, seqlen, self.latent_size + 1, self.num_mixtures))
-        mix_probs = F.softmax(mix_probs.view(batch, seqlen, self.latent_size + 1, self.num_mixtures), dim = -1 )
+        means = means.view(batch, seqlen, self.latent_size, self.num_mixtures)
+        #scales =  self.softplus(scales.view(batch, seqlen, self.latent_size, self.num_mixtures)) + 1e-8
+        scales = torch.clamp(self.softplus(scales.view(batch, seqlen, self.latent_size, self.num_mixtures)), 1e-8, 20)
+        #mix_probs = F.softmax(mix_probs.view(batch, seqlen, self.latent_size, self.num_mixtures), dim = -1 )
+        mix_probs = F.softmax(mix_probs.view(batch, seqlen, self.num_mixtures), dim = -1 )
         logits_vocab = F.softmax(logits_vocab, dim = -1 )
-
 
         #print('process tokens', time.time() - start_time)
 
@@ -2758,26 +2956,46 @@ class ZebraInfiniteForCausalLMmixed(ZebraPreTrainedModel):
         start_time = time.time()
 
         loss = None
+        rel_loss = None
         if labels is not None:
-            shift_means = means[..., :-1, :, :].contiguous()
-            shift_scales = scales[..., :-1, :, :].contiguous()
-            shift_mix_probs = mix_probs[..., :-1, :, :].contiguous()
+            shift_means = means[:, :-1, :, :].contiguous()
+            shift_scales = scales[:, :-1, :, :].contiguous()
+            shift_mix_probs = mix_probs[:, :-1, :].contiguous()
             #     print(shift_means.shape)
             shift_labels = labels[..., 1:,:].contiguous()
-            #shift_labels = torch.cat([shift_labels, mu_tokens[..., 1:, :]], axis=-1)
-            #loss = self.gmm_neg_log_likelihood( shift_labels, shift_means, shift_scales, shift_mix_probs )
+
+            if use_variance:
+                loss = self.gmm_neg_log_likelihood(shift_labels, shift_means, shift_scales, shift_mix_probs.unsqueeze(-2).repeat(1,1,self.latent_size,1))
+            else:
+                loss = self.weighted_mse(shift_labels, shift_means, shift_scales, shift_mix_probs.unsqueeze(-2).repeat(1,1,self.latent_size,1))
+
+            #mixture_distribution = dist.Categorical(shift_mix_probs.view(-1, self.num_mixtures))
+            #component_distribution = dist.Independent(dist.Normal(shift_means.view(-1, self.num_mixtures, self.latent_size), shift_scales.view(-1, self.num_mixtures, self.latent_size)), 1)
+        
+        # Create the mixture of Gaussians
+            #mixture_of_gaussians = dist.MixtureSameFamily(mixture_distribution, component_distribution)
+        
+        # Compute the log probability of x
+            #loss = - mixture_of_gaussians.log_prob(shift_labels.view(-1, self.latent_size)).mean()
             #loss = ((shift_means[..., 0] - shift_labels)**2).mean()
             #loss = self.rel_loss(shift_means[..., 0], shift_labels)
             #loss = self.rel_loss(rearrange(shift_means[..., 0], ' b t c -> (b t) c'), rearrange(shift_labels, 'b t c -> (b t) c'))
-            use_rel_loss = True 
+            use_rel_loss = False 
             if use_rel_loss:
-                pred = torch.cat([input_ids[:, :1, :], shift_means[..., :self.latent_size, 0]], axis=1)
+                index = shift_mix_probs.argmax(-1)[..., None, None].repeat(1, 1, self.latent_size, 1)
+                #weights = shift_mix_probs[..., None].repeat(1, 1, self.latent_size)
+                #print(index.shape, shift_means.shape)
+                pred = torch.cat([input_ids[:, :1, :], torch.gather(shift_means[..., :self.latent_size], -1, index).squeeze(-1) ], axis=1)
                 shift_labels = torch.cat([input_ids[:, :1, :], shift_labels], axis=1)
-                pred = rearrange(pred, 'b (t l) c -> (b t) (l c)', l=16) 
-                shift_labels = rearrange(shift_labels, 'b (t l) c -> (b t) (l c)', l=16) 
-                loss = self.rel_loss(pred, shift_labels)
-            else: 
-                loss = ((shift_means[..., 0] - shift_labels)**2).mean()
+                pred = rearrange(pred, 'b (t l) c -> (b t) (l c)', l=patch_size) 
+                shift_labels = rearrange(shift_labels, 'b (t l) c -> (b t) (l c)',l=patch_size) 
+                #loss = ((pred - shift_labels)**2).mean()
+                rel_loss = self.rel_loss(pred, shift_labels)
+                #loss = 1/self.latent_size*loss + rel_loss
+                #loss = rel_loss
+            else:
+                pass 
+                #loss = ((shift_means[..., 0] - shift_labels)**2).mean()
 
             #print(scale_tokens.shape, logits_vocab.shape)
             #shift_logits_vocab = logits_vocab[..., :-1, :].contiguous() 
@@ -2797,6 +3015,7 @@ class ZebraInfiniteForCausalLMmixed(ZebraPreTrainedModel):
 
         return CausalLMOutputWithPast(
             loss=loss,
+            rel_loss=rel_loss,
             logits=(means,scales, mix_probs, logits_vocab),
             past_key_values=outputs.past_key_values,
             hidden_states=outputs.hidden_states,
@@ -2834,6 +3053,69 @@ class ZebraInfiniteForCausalLMmixed(ZebraPreTrainedModel):
         loss = -nll.mean()  # Mean over all dimensions
 
         return loss
+    
+    def weighted_mse(self, x, means, scales, mix_probs):
+        """
+        Compute the negative log-likelihood of data x under the GMM defined by means, scales, and mix_probs.
+
+        Args:
+        x (Tensor): The ground truth data, shape [batch_size, seq_length, vocab]
+        means (Tensor): Predicted means, shape [batch_size, seq_length, d, k]
+        scales (Tensor): Predicted scales, shape [batch_size, seq_length, d, k]
+        mix_probs (Tensor): Predicted mixture probabilities, shape [batch_size, seq_length, d, k]
+
+        Returns:
+        Tensor: The negative log-likelihood loss
+        """
+        batch_size, seq_length, vocab = x.size()
+        _, _, d, k = means.size()
+        x = x.unsqueeze(-1).expand_as(means)
+
+
+        # Calculate the Gaussian likelihood for each component
+        delta = ((x - means) ** 2) 
+
+        # Weighted sum of Gaussian likelihoods for each mixture component
+        weighted_gaussian = delta * mix_probs
+        weighted_sum = weighted_gaussian.sum(dim=-1)  # Sum over the mixture components
+
+        # Compute negative log likelihood
+        loss = weighted_sum.mean()  # Mean over all dimensions
+
+        return loss
+
+    def gmm_neg_log_likelihood_2(self, x, means, scales, mix_probs):
+        """
+        Compute the negative log-likelihood of data x under the GMM defined by means, scales, and mix_probs.
+
+        Args:
+        x (Tensor): The ground truth data, shape [batch_size, seq_length, vocab]
+        means (Tensor): Predicted means, shape [batch_size, seq_length, d, k]
+        scales (Tensor): Predicted scales, shape [batch_size, seq_length, d, k]
+        mix_probs (Tensor): Predicted mixture probabilities, shape [batch_size, seq_length, d, k]
+
+        Returns:
+        Tensor: The negative log-likelihood loss
+        """
+        batch_size, seq_length, vocab = x.size()
+        _, _, d, k = means.size()
+        x = x.unsqueeze(-1).expand_as(means)
+
+
+        # Calculate the Gaussian likelihood for each component
+        var = scales ** 2
+        pre_exp = -0.5 * ((x - means) ** 2) / var #/ (scales * math.sqrt(2 * math.pi)
+        gaussian = torch.exp(pre_exp.sum(-2)) / (scales.prod(-2) * math.sqrt(2 * math.pi)**d)
+
+        # Weighted sum of Gaussian likelihoods for each mixture component
+        weighted_gaussian = gaussian * mix_probs
+        weighted_sum = weighted_gaussian.sum(dim=-1)  # Sum over the mixture components
+
+        # Compute negative log likelihood
+        nll = torch.log(weighted_sum + 1e-6)
+        loss = -nll.mean()  # Mean over all dimensions
+
+        return loss
 
 class ZebraInfiniteModelmixed(ZebraPreTrainedModel):
     """
@@ -2850,8 +3132,9 @@ class ZebraInfiniteModelmixed(ZebraPreTrainedModel):
         #self.embed_vocab = nn.Linear(1, config.hidden_size, bias=False)
         self.embed_vocab = nn.Linear(config.latent_size, config.hidden_size, bias=False)
         self.embed_tokens = nn.Linear(config.latent_size, config.hidden_size, bias=False)
-        self.layers = nn.ModuleList([ZebraDecoderLayer3(config) for _ in range(config.num_hidden_layers)])
-        self.norm = ZebraRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.layers = nn.ModuleList([ZebraDecoderLayer(config) for _ in range(config.num_hidden_layers)])
+        self.layers_condition = ZebraDecoderLayer5(config)
+        self.layers_proj = ZebraDecoderLayer4(config)
         self.bidirectional = config.bidirectional
         self.lift_mu = nn.Linear(1, config.hidden_size, bias=False)
         self.conditioning_mlp = nn.Sequential(nn.Linear(config.hidden_size, config.hidden_size),
@@ -2989,8 +3272,24 @@ class ZebraInfiniteModelmixed(ZebraPreTrainedModel):
         #print(scale_tokens.shape)
         
         #print('scale_tokens', scale_tokens.shape, mu_tokens.shape)
-        conditioning = self.embed_vocab(input_ids)# + self.lift_mu(mu_tokens) 
-        conditioning = self.conditioning_mlp(conditioning)
+        #conditioning = self.embed_vocab(scale_tokens) + self.lift_mu(mu_tokens) 
+        #conditioning = self.embed_vocab(scale_tokens) + self.lift_mu(mu_tokens) 
+        #conditioning = self.conditioning_mlp(conditioning)
+
+        #conditioning = self.embed_vocab(input_ids) # v1
+        #layer_outputs = self.layers_condition(
+        #            conditioning,
+        #            #conditioning=conditioning,
+        #            attention_mask=attention_mask,
+        #            position_ids=position_ids,
+        #            past_key_value=None,
+        #            output_attentions=None,
+        #            use_cache=use_cache,
+        #            padding_mask=padding_mask,
+        #        )
+        #conditioning = layer_outputs[0] # v1
+
+        #conditioning = self.embed_vocab(inputs_ids)
         hidden_states = inputs_embeds #+ self.embed_vocab(scale_tokens) !!! WARNING
 
         if self.gradient_checkpointing and self.training:
@@ -3026,7 +3325,7 @@ class ZebraInfiniteModelmixed(ZebraPreTrainedModel):
             else:
                 layer_outputs = decoder_layer(
                     hidden_states,
-                    conditioning=conditioning,
+                    #conditioning=conditioning,
                     attention_mask=attention_mask,
                     position_ids=position_ids,
                     past_key_value=past_key_value,
@@ -3036,9 +3335,12 @@ class ZebraInfiniteModelmixed(ZebraPreTrainedModel):
                 )
                 #if idx ==0: #2 == 1:
                 #    conditioning = self.conditioning_mlp(hidden_states)
-                if idx % 2 == 1:
-                    conditioning = self.conditioning_mlp(self.projection_mlp[idx//2](hidden_states))
-
+                #if idx % 2 == 1:
+                    #conditioning = self.conditioning_mlp(self.projection_mlp[idx//2](hidden_states))
+            #if idx == 0:
+            #    conditioning = layer_outputs[0]
+            #else:
+            #    hidden_states = layer_outputs[0]
             hidden_states = layer_outputs[0]
 
             if use_cache:
@@ -3047,6 +3349,18 @@ class ZebraInfiniteModelmixed(ZebraPreTrainedModel):
             if output_attentions:
                 all_self_attns += (layer_outputs[1],)
 
+        #layer_outputs = self.layers_proj( # v1
+        #            hidden_states,
+        #            conditioning=conditioning,
+        #            attention_mask=attention_mask,
+        #            position_ids=position_ids,
+        #            past_key_value=past_key_value,
+        #            output_attentions=output_attentions,
+        #            use_cache=use_cache,
+        #            padding_mask=padding_mask,
+        #        )
+        #
+        #hidden_states = layer_outputs[0] # v1
         #hidden_states = inputs_embeds + self.norm(hidden_states)
 
         # add hidden states from the last decoder layer

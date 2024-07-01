@@ -128,6 +128,7 @@ _import_structure = {
     ],
     "models": [],
     # Models
+    "models.zebra_mlm": ["ZEBRA_MLM_PRETRAINED_CONFIG_ARCHIVE_MAP", "ZebraMlmConfig", "ZebraMlmTokenizer"],
     "models.albert": ["ALBERT_PRETRAINED_CONFIG_ARCHIVE_MAP", "AlbertConfig"],
     "models.align": [
         "ALIGN_PRETRAINED_CONFIG_ARCHIVE_MAP",
@@ -844,6 +845,7 @@ except OptionalDependencyNotAvailable:
     ]
 else:
     # Fast tokenizers structure
+    _import_structure["models.zebra_mlm"].append("ZebraMlmTokenizerFast")
     _import_structure["models.albert"].append("AlbertTokenizerFast")
     _import_structure["models.bart"].append("BartTokenizerFast")
     _import_structure["models.barthez"].append("BarthezTokenizerFast")
@@ -1089,6 +1091,22 @@ else:
     _import_structure["modeling_utils"] = ["PreTrainedModel"]
 
     # PyTorch models structure
+
+    _import_structure["models.zebra_mlm"].extend(
+        [
+            "ZEBRA_MLM_PRETRAINED_MODEL_ARCHIVE_LIST",
+            "ZebraMlmForMaskedLM",
+            "ZebraMlmForCausalLM",
+            "ZebraMlmForMultipleChoice",
+            "ZebraMlmForQuestionAnswering",
+            "ZebraMlmForSequenceClassification",
+            "ZebraMlmForTokenClassification",
+            "ZebraMlmLayer",
+            "ZebraMlmModel",
+            "ZebraMlmPreTrainedModel",
+            "load_tf_weights_in_zebra_mlm",
+        ]
+    )
 
     _import_structure["models.albert"].extend(
         [
@@ -2121,7 +2139,7 @@ else:
         ["LlamaForCausalLM", "LlamaForSequenceClassification", "LlamaModel", "LlamaPreTrainedModel"]
     )
     _import_structure["models.zebra"].extend(
-        ["ZebraForCausalLM", "ZebraInfiniteForCausalLM", "ZebraForSequenceClassification", "ZebraModel", "ZebraPreTrainedModel", "ZebraForMaskedLM"]
+        ["ZebraInfiniteForCausalLM", "ZebraInfiniteForCausalLMv2", "ZebraInfiniteForCausalLMmixed", "ZebraForCausalLM", "ZebraForSequenceClassification", "ZebraModel", "ZebraPreTrainedModel", "ZebraForMaskedLM"]
     )
     _import_structure["models.longformer"].extend(
         [
@@ -4331,6 +4349,7 @@ if TYPE_CHECKING:
         load_tf2_weights_in_pytorch_model,
     )
     from .models.albert import ALBERT_PRETRAINED_CONFIG_ARCHIVE_MAP, AlbertConfig
+    from .models.zebra_mlm import ZEBRA_MLM_PRETRAINED_CONFIG_ARCHIVE_MAP, ZebraMlmConfig, ZebraMlmTokenizer
     from .models.align import (
         ALIGN_PRETRAINED_CONFIG_ARCHIVE_MAP,
         AlignConfig,
@@ -4999,6 +5018,7 @@ if TYPE_CHECKING:
         from .utils.dummy_tokenizers_objects import *
     else:
         # Fast tokenizers imports
+        from .models.zebra_mlm import ZebraMlmTokenizerFast
         from .models.albert import AlbertTokenizerFast
         from .models.bart import BartTokenizerFast
         from .models.barthez import BarthezTokenizerFast
@@ -6061,7 +6081,7 @@ if TYPE_CHECKING:
             LiltPreTrainedModel,
         )
         from .models.llama import LlamaForCausalLM, LlamaForSequenceClassification, LlamaModel, LlamaPreTrainedModel
-        from .models.zebra import ZebraForCausalLM,ZebraInfiniteForCausalLM, ZebraForSequenceClassification, ZebraModel, ZebraPreTrainedModel, ZebraForMaskedLM
+        from .models.zebra import ZebraInfiniteForCausalLM, ZebraForCausalLM, ZebraForSequenceClassification, ZebraModel, ZebraPreTrainedModel, ZebraForMaskedLM
         from .models.longformer import (
             LONGFORMER_PRETRAINED_MODEL_ARCHIVE_LIST,
             LongformerForMaskedLM,
@@ -6546,6 +6566,20 @@ if TYPE_CHECKING:
         )
 
         # PyTorch model imports
+
+        from .models.zebra_mlm import (
+            ZEBRA_MLM_PRETRAINED_MODEL_ARCHIVE_LIST,
+            ZebraMlmForMaskedLM,
+            ZebraMlmForCausalLM,
+            ZebraMlmForMultipleChoice,
+            ZebraMlmForQuestionAnswering,
+            ZebraMlmForSequenceClassification,
+            ZebraMlmForTokenClassification,
+            ZebraMlmLayer,
+            ZebraMlmModel,
+            ZebraMlmPreTrainedModel,
+            load_tf_weights_in_zebra_mlm,
+        )
         from .models.seamless_m4t import (
             SEAMLESS_M4T_PRETRAINED_MODEL_ARCHIVE_LIST,
             SeamlessM4TCodeHifiGan,

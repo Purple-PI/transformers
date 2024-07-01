@@ -39,14 +39,16 @@ from ...pytorch_utils import ALL_LAYERNORM_LAYERS
 from ...utils import (
     add_start_docstrings,
     add_start_docstrings_to_model_forward,
-    is_flash_attn_available,
+    is_flash_attn_2_available,
     logging,
     replace_return_docstrings,
 )
 from .configuration_zebra import ZebraConfig
+import time
+from einops import rearrange
 
 
-if is_flash_attn_available():
+if is_flash_attn_2_available():
     from flash_attn import flash_attn_func, flash_attn_varlen_func
     from flash_attn.bert_padding import index_first_axis, pad_input, unpad_input  # noqa
 
@@ -799,6 +801,10 @@ class ZebraModel(ZebraPreTrainedModel):
         super().__init__(config)
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
+        self.lift_mu = nn.Linear(1, config.hidden_size)
+        self.lift_sigma = nn.Sequential(nn.Linear(1, config.hidden_size),
+                                        nn.ReLU(),
+                                        nn.Linear(config.hidden_size, config.hidden_size))
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.layers = nn.ModuleList([ZebraDecoderLayer(config) for _ in range(config.num_hidden_layers)])
         self.norm = ZebraRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -870,6 +876,8 @@ class ZebraModel(ZebraPreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        mu: Optional[torch.Tensor] = None,
+        sigma: Optional[torch.Tensor] = None,
     ) -> Union[Tuple, BaseModelOutputWithPast]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -878,6 +886,13 @@ class ZebraModel(ZebraPreTrainedModel):
         use_cache = use_cache if use_cache is not None else self.config.use_cache
 
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+
+        if mu is not None:
+            mu_embedding = self.lift_mu(mu[..., None])
+
+        if sigma is not None:
+            sigma_embedding = self.lift_sigma(sigma[..., None])
 
         # retrieve input_ids and inputs_embeds
         if input_ids is not None and inputs_embeds is not None:
@@ -899,19 +914,23 @@ class ZebraModel(ZebraPreTrainedModel):
         if position_ids is None:
             device = input_ids.device if input_ids is not None else inputs_embeds.device
             position_ids = torch.arange(
-                past_key_values_length, seq_length + past_key_values_length, dtype=torch.long, device=device
+                past_key_values_length, seq_length + 2 + past_key_values_length, dtype=torch.long, device=device
             )
-            position_ids = position_ids.unsqueeze(0).view(-1, seq_length)
+            position_ids = position_ids.unsqueeze(0).view(-1, seq_length + 2)
         else:
-            position_ids = position_ids.view(-1, seq_length).long()
+            position_ids = position_ids.view(-1, seq_length + 2).long()
 
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
         # embed positions
         if attention_mask is None:
-            attention_mask = torch.ones(
-                (batch_size, seq_length_with_past), dtype=torch.bool, device=inputs_embeds.device
-            )
+            attention_mask = _make_causal_mask(torch.Size((batch_size, seq_length + 2)), 
+                                               dtype=torch.float32,
+                                               device=inputs_embeds.device,
+                                               past_key_values_length=past_key_values_length)
+            #torch.ones(
+            #    (batch_size, seq_length_with_past), dtype=torch.bool, device=inputs_embeds.device
+            #)
             padding_mask = None
         else:
             if 0 in attention_mask:
@@ -919,9 +938,22 @@ class ZebraModel(ZebraPreTrainedModel):
             else:
                 padding_mask = None
 
-        attention_mask = self._prepare_decoder_attention_mask(
-            attention_mask, (batch_size, seq_length), inputs_embeds, past_key_values_length
-        )
+        
+        if mu is not None:
+            inputs_embeds = torch.cat([mu_embedding, inputs_embeds], axis=1)
+            #attention_mask = torch.cat([torch.ones(batch_size, 1).bool().to(attention_mask), attention_mask], axis=-1)
+            seq_length +=1
+
+        if sigma is not None:
+            inputs_embeds = torch.cat([sigma_embedding, inputs_embeds], axis=1)
+            #attention_mask = torch.cat([torch.ones(batch_size, 1).bool().to(attention_mask), attention_mask], axis=-1)
+            seq_length +=1
+
+        # ask Pierre about this
+            
+        #attention_mask = self._prepare_decoder_attention_mask(
+        #    attention_mask, (batch_size, seq_length), inputs_embeds, past_key_values_length
+        #)
 
         hidden_states = inputs_embeds
 
@@ -1459,6 +1491,8 @@ class ZebraForCausalLM(ZebraPreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        mu: Optional[torch.Tensor] = None,
+        sigma: Optional[torch.Tensor] = None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         r"""
         Args:
@@ -1492,6 +1526,8 @@ class ZebraForCausalLM(ZebraPreTrainedModel):
         )
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
+        #print('mu', mu.shape, sigma.shape, input_ids.shape)
+
         # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
         outputs = self.model(
             input_ids=input_ids,
@@ -1503,9 +1539,16 @@ class ZebraForCausalLM(ZebraPreTrainedModel):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
+            mu = mu,
+            sigma = sigma
         )
     
         hidden_states = outputs[0]
+        if mu is not None:
+            hidden_states = hidden_states[:, 1:, : ] # we remove the mu token
+        if sigma is not None:
+            hidden_states = hidden_states[:, 1:, : ] # we remove the sigma token
+
         if self.config.pretraining_tp > 1:
             lm_head_slices = self.lm_head.weight.split(self.vocab_size // self.config.pretraining_tp, dim=0)
             logits = [F.linear(hidden_states, lm_head_slices[i]) for i in range(self.config.pretraining_tp)]
@@ -1882,3 +1925,1275 @@ class ZebraForSequenceClassification(ZebraPreTrainedModel):
             hidden_states=transformer_outputs.hidden_states,
             attentions=transformer_outputs.attentions,
         )
+
+
+
+
+class ZebraInfiniteModel(ZebraPreTrainedModel):
+    """
+    Transformer decoder consisting of *config.num_hidden_layers* layers. Each layer is a [`ZebraDecoderLayer`]
+
+    Args:
+        config: ZebraConfig
+    """
+    def __init__(self, config: ZebraConfig):
+        super().__init__(config)
+        self.padding_idx = config.pad_token_id
+        self.latent_size = config.latent_size
+        self.lift_mu = nn.Sequential(nn.Linear(1, config.hidden_size),
+                                     nn.ReLU(),
+                                     nn.Linear(config.hidden_size, config.hidden_size))
+        self.lift_sigma = nn.Sequential(nn.Linear(1, config.hidden_size),
+                                        nn.ReLU(),
+                                        nn.Linear(config.hidden_size, config.hidden_size))
+        self.embed_tokens = nn.Linear(config.latent_size, config.hidden_size)
+        self.layers = nn.ModuleList([ZebraDecoderLayer(config) for _ in range(config.num_hidden_layers)])
+        self.norm = ZebraRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.bidirectional = config.bidirectional
+        self.gradient_checkpointing = False
+        # Initialize weights and apply final processing
+        self.post_init()
+
+    def get_input_embeddings(self):
+        return self.embed_tokens
+
+    def set_input_embeddings(self, value):
+        self.embed_tokens = value
+
+    def _prepare_decoder_attention_mask(self, attention_mask, input_shape, inputs_embeds, past_key_values_length):
+        if self.bidirectional:
+            # For bidirectional models, use a different mask that doesn't enforce causality
+            expanded_attn_mask = _expand_mask(attention_mask, inputs_embeds.dtype, tgt_len=input_shape[-1]).to(inputs_embeds.device)
+            return expanded_attn_mask
+        else:
+            # For autoregressive models, use the causal mask
+            combined_attention_mask = None
+            if input_shape[-1] > 1:
+                combined_attention_mask = _make_causal_mask(
+                    input_shape,
+                    inputs_embeds.dtype,
+                    device=inputs_embeds.device,
+                    past_key_values_length=past_key_values_length,
+                )
+
+            if attention_mask is not None:
+                expanded_attn_mask = _expand_mask(attention_mask, inputs_embeds.dtype, tgt_len=input_shape[-1]).to(inputs_embeds.device)
+                combined_attention_mask = (
+                    expanded_attn_mask if combined_attention_mask is None else expanded_attn_mask + combined_attention_mask
+                )
+            return combined_attention_mask
+    # # Copied from transformers.models.bart.modeling_bart.BartDecoder._prepare_decoder_attention_mask
+    # def _prepare_decoder_attention_mask(self, attention_mask, input_shape, inputs_embeds, past_key_values_length):
+    #     # create causal mask
+    #     # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
+    #     combined_attention_mask = None
+    #     if input_shape[-1] > 1:
+    #         combined_attention_mask = _make_causal_mask(
+    #             input_shape,
+    #             inputs_embeds.dtype,
+    #             device=inputs_embeds.device,
+    #             past_key_values_length=past_key_values_length,
+    #         )
+
+    #     if attention_mask is not None:
+    #         # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
+    #         expanded_attn_mask = _expand_mask(attention_mask, inputs_embeds.dtype, tgt_len=input_shape[-1]).to(
+    #             inputs_embeds.device
+    #         )
+    #         combined_attention_mask = (
+    #             expanded_attn_mask if combined_attention_mask is None else expanded_attn_mask + combined_attention_mask
+    #         )
+    #     return combined_attention_mask
+
+    @add_start_docstrings_to_model_forward(ZEBRA_INPUTS_DOCSTRING)
+    def forward(
+        self,
+        input_ids: torch.FloatTensor = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[List[torch.FloatTensor]] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+        mu: Optional[torch.Tensor] = None,
+        sigma: Optional[torch.Tensor] = None,
+    ) -> Union[Tuple, BaseModelOutputWithPast]:
+        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+        output_hidden_states = (
+            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        )
+        use_cache = use_cache if use_cache is not None else self.config.use_cache
+
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+
+        if mu is not None:
+            mu_embedding = self.lift_mu(mu[..., None])
+
+        if sigma is not None:
+            sigma_embedding = self.lift_sigma(sigma[..., None])
+
+        # retrieve input_ids and inputs_embeds
+        if input_ids is not None and inputs_embeds is not None:
+            raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
+        elif input_ids is not None:
+            batch_size, seq_length, vocab_dim = input_ids.shape
+        elif inputs_embeds is not None:
+            batch_size, seq_length, _ = inputs_embeds.shape
+        else:
+            raise ValueError("You have to specify either input_ids or inputs_embeds")
+
+        seq_length_with_past = seq_length
+        past_key_values_length = 0
+
+        if inputs_embeds is None:
+            inputs_embeds = self.embed_tokens(input_ids)
+
+        if mu is not None:
+            x = torch.cat([mu_embedding, inputs_embeds], axis=1)
+            #attention_mask = torch.cat([torch.ones(batch_size, 1).bool().to(attention_mask), attention_mask], axis=-1)
+            seq_length +=1
+
+        if sigma is not None:
+            x = torch.cat([sigma_embedding, x], axis=1)
+            #attention_mask = torch.cat([torch.ones(batch_size, 1).bool().to(attention_mask), attention_mask], axis=-1)
+            seq_length +=1
+
+        if past_key_values is not None:
+            past_key_values_length = past_key_values[0][0].shape[2]
+            seq_length_with_past = seq_length_with_past + past_key_values_length
+
+        if position_ids is None:
+            device = input_ids.device if input_ids is not None else inputs_embeds.device
+            position_ids = torch.arange(
+                past_key_values_length, seq_length + past_key_values_length, dtype=torch.long, device=device
+            )
+            position_ids = position_ids.unsqueeze(0).view(-1, seq_length)
+        else:
+            position_ids = position_ids.view(-1, seq_length).long()
+
+        # embed positions
+        if attention_mask is None:
+            attention_mask = torch.ones(
+                (batch_size, seq_length_with_past), dtype=torch.bool, device=inputs_embeds.device
+            )
+            padding_mask = None
+        else:
+            if 0 in attention_mask:
+                padding_mask = attention_mask
+            else:
+                padding_mask = None
+
+        attention_mask = self._prepare_decoder_attention_mask(
+            attention_mask, (batch_size, seq_length_with_past), inputs_embeds, past_key_values_length
+        )
+
+        # first add min to the first row
+        attention_mask = torch.cat([torch.full((seq_length_with_past, 2), torch.finfo(torch.float32).min, device=device)[None, None, ...].repeat(batch_size, 1, 1, 1), attention_mask], axis=-1)
+        #print('attention_mask', attention_mask.shape)
+        attention_mask = torch.cat([torch.zeros(batch_size, 1, 2, seq_length).to(device), attention_mask], axis=-2)
+
+        hidden_states = x
+
+        if self.gradient_checkpointing and self.training:
+            if use_cache:
+                logger.warning_once(
+                    "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`..."
+                )
+                use_cache = False
+
+        # decoder layers
+        all_hidden_states = () if output_hidden_states else None
+        all_self_attns = () if output_attentions else None
+        next_decoder_cache = () if use_cache else None
+
+        for idx, decoder_layer in enumerate(self.layers):
+            if output_hidden_states:
+                all_hidden_states += (hidden_states,)
+
+            past_key_value = past_key_values[idx] if past_key_values is not None else None
+
+            if self.gradient_checkpointing and self.training:
+
+                def create_custom_forward(module):
+                    def custom_forward(*inputs):
+                        # None for past_key_value
+                        return module(*inputs, past_key_value, output_attentions, padding_mask=padding_mask)
+
+                    return custom_forward
+
+                layer_outputs = torch.utils.checkpoint.checkpoint(
+                    create_custom_forward(decoder_layer), hidden_states, attention_mask, position_ids
+                )
+            else:
+                layer_outputs = decoder_layer(
+                    hidden_states,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    past_key_value=past_key_value,
+                    output_attentions=output_attentions,
+                    use_cache=use_cache,
+                    padding_mask=padding_mask,
+                )
+
+            hidden_states = layer_outputs[0]
+
+            if use_cache:
+                next_decoder_cache += (layer_outputs[2 if output_attentions else 1],)
+
+            if output_attentions:
+                all_self_attns += (layer_outputs[1],)
+
+        hidden_states = self.norm(hidden_states)
+
+        # add hidden states from the last decoder layer
+        if output_hidden_states:
+            all_hidden_states += (hidden_states,)
+
+        next_cache = next_decoder_cache if use_cache else None
+        if not return_dict:
+            return tuple(v for v in [hidden_states, next_cache, all_hidden_states, all_self_attns] if v is not None)
+        return BaseModelOutputWithPast(
+            last_hidden_state=hidden_states,
+            past_key_values=next_cache,
+            hidden_states=all_hidden_states,
+            attentions=all_self_attns,
+        )
+
+
+class ZebraInfiniteForCausalLM(ZebraPreTrainedModel):
+    def __init__(self, config):
+        super().__init__(config)
+        self.model = ZebraInfiniteModel(config)
+        self.latent_size = config.latent_size
+        self.num_mixtures = config.num_mixtures
+        
+        self.mean_head = nn.Linear(config.hidden_size, self.latent_size * self.num_mixtures, bias=False)
+        self.variance_head = nn.Linear(config.hidden_size, self.latent_size * self.num_mixtures, bias=False)
+        self.mix_prob_head = nn.Linear(config.hidden_size, self.latent_size * self.num_mixtures, bias=False)
+        self.softplus = torch.nn.Softplus()
+        # Initialize weights and apply final processing
+        self.post_init()
+
+    def get_input_embeddings(self):
+        return self.model.embed_tokens
+
+    def set_input_embeddings(self, value):
+        self.model.embed_tokens = value
+
+    def get_output_embeddings(self):
+        return self.lm_head
+
+    def set_output_embeddings(self, new_embeddings):
+        self.lm_head = new_embeddings
+
+    def set_decoder(self, decoder):
+        self.model = decoder
+
+    def get_decoder(self):
+        return self.model
+
+    @add_start_docstrings_to_model_forward(ZEBRA_INPUTS_DOCSTRING)
+    @replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
+    def forward(
+        self,
+        input_ids: torch.LongTensor = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[List[torch.FloatTensor]] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        labels: Optional[torch.LongTensor] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+
+    ) -> Union[Tuple, CausalLMOutputWithPast]:
+        r"""
+        Args:
+            labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+                Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
+                config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
+                (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
+
+        Returns:
+
+        Example:
+
+        ```python
+        >>> from transformers import AutoTokenizer, ZebraForCausalLM
+
+        >>> model = ZebraForCausalLM.from_pretrained(PATH_TO_CONVERTED_WEIGHTS)
+        >>> tokenizer = AutoTokenizer.from_pretrained(PATH_TO_CONVERTED_TOKENIZER)
+
+        >>> prompt = "Hey, are you conscious? Can you talk to me?"
+        >>> inputs = tokenizer(prompt, return_tensors="pt")
+
+        >>> # Generate
+        >>> generate_ids = model.generate(inputs.input_ids, max_length=30)
+        >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
+        "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
+        ```"""
+
+        start_time = time.time()
+
+        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+        output_hidden_states = (
+            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        )
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
+        outputs = self.model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+            mu=mu,
+            sigma=sigma
+        )
+
+        hidden_states = outputs[0]
+        if mu is not None:
+            hidden_states = hidden_states[:, 1:, : ] # we remove the mu token
+        if sigma is not None:
+            hidden_states = hidden_states[:, 1:, : ] # we remove the sigma token
+        #print('hidden_states', hidden_states.shape)
+
+        batch, seqlen , dim = input_ids.shape
+        means = self.mean_head(hidden_states)
+        scales =self.variance_head(hidden_states)  # Ensure scales are positive
+        mix_probs = self.mix_prob_head(hidden_states) # Ensure mixture probabilities sum to 1
+
+        # Reshape the outputs to [batch_size, seq_length, d, k]
+        means = means.view(batch, seqlen, self.latent_size, self.num_mixtures)
+        scales =  self.softplus(scales.view(batch, seqlen, self.latent_size, self.num_mixtures))
+        mix_probs = F.softmax(mix_probs.view(batch, seqlen, self.latent_size, self.num_mixtures), dim = -1 )
+
+        #print('process tokens', time.time() - start_time)
+
+
+        start_time = time.time()
+
+        loss = None
+        if labels is not None:
+            shift_means = means[..., :-1, :, :].contiguous()
+            shift_scales = scales[..., :-1, :, :].contiguous()
+            shift_mix_probs = mix_probs[..., :-1, :, :].contiguous()
+            #     print(shift_means.shape)
+            shift_labels = labels[..., 1:,:].contiguous()
+            loss = self.gmm_neg_log_likelihood( shift_labels, shift_means, shift_scales, shift_mix_probs )
+
+        if not return_dict:
+            output = (means,scales, mix_probs) + outputs[1:]
+            return (loss,) + output if loss is not None else output
+
+        #print('compute loss', time.time() - start_time)
+
+        return CausalLMOutputWithPast(
+            loss=loss,
+            logits=(means,scales, mix_probs),
+            past_key_values=outputs.past_key_values,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+        )
+    # def gmm_log_like3(self, x, means, sclaes, mix_probs):
+    #     gaussian_nll_loss = nn.GaussianNLLLoss()
+    #     likelihood = 0.0
+    #     for k in range(means.size(-1)):
+    #         likelihood += gaussian_nll_loss(means, x, vars)
+    #     return likelihood
+    
+    # def gmm_log_like2(self, x, means, scales, mix_probs):
+    #     # Ensure scales are not too small
+    #     scales = torch.maximum(scales, torch.tensor(1e-6))
+        
+    #     log_likelihood = None
+    #     for k in range(means.size(-1)):
+    #         log_prob = self.pytorch_normal_log_pdf(x, means[..., k], scales[..., k])
+    #         log_mix = torch.log(torch.clamp(mix_probs[..., k], min=1e-6))  # Clipping mix_probs for stability
+    #         if log_likelihood is None:
+    #             log_likelihood = log_prob + log_mix
+    #         else:
+    #             log_likelihood = torch.logsumexp(torch.stack([log_likelihood, log_prob + log_mix]), dim=0)
+    #     return torch.sum(log_likelihood)  # Remove the negative sign for a positive loss
+
+    # def pytorch_normal_log_pdf(self, x, mean, std):
+    #     normal_dist = Normal(mean, std)
+    #     return normal_dist.log_prob(x)
+
+    def gmm_neg_log_likelihood(self, x, means, scales, mix_probs):
+        """
+        Compute the negative log-likelihood of data x under the GMM defined by means, scales, and mix_probs.
+
+        Args:
+        x (Tensor): The ground truth data, shape [batch_size, seq_length, vocab]
+        means (Tensor): Predicted means, shape [batch_size, seq_length, d, k]
+        scales (Tensor): Predicted scales, shape [batch_size, seq_length, d, k]
+        mix_probs (Tensor): Predicted mixture probabilities, shape [batch_size, seq_length, d, k]
+
+        Returns:
+        Tensor: The negative log-likelihood loss
+        """
+        batch_size, seq_length, vocab = x.size()
+        _, _, d, k = means.size()
+        x = x.unsqueeze(-1).expand_as(means)
+
+
+        # Calculate the Gaussian likelihood for each component
+        var = scales ** 2
+        gaussian = torch.exp(-0.5 * ((x - means) ** 2) / var) / (scales * math.sqrt(2 * math.pi))
+
+        # Weighted sum of Gaussian likelihoods for each mixture component
+        weighted_gaussian = gaussian * mix_probs
+        weighted_sum = weighted_gaussian.sum(dim=-1)  # Sum over the mixture components
+
+        # Compute negative log likelihood
+        nll = torch.log(weighted_sum + 1e-6)
+        loss = -nll.mean()  # Mean over all dimensions
+
+        return loss
+
+
+    def prepare_inputs_for_generation(
+        self, input_ids, past_key_values=None, attention_mask=None, inputs_embeds=None, **kwargs
+    ):
+        if past_key_values:
+            input_ids = input_ids[:, -1:]
+
+        position_ids = kwargs.get("position_ids", None)
+        if attention_mask is not None and position_ids is None:
+            # create position_ids on the fly for batch generation
+            position_ids = attention_mask.long().cumsum(-1) - 1
+            position_ids.masked_fill_(attention_mask == 0, 1)
+            if past_key_values:
+                position_ids = position_ids[:, -1].unsqueeze(-1)
+
+        # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
+        if inputs_embeds is not None and past_key_values is None:
+            model_inputs = {"inputs_embeds": inputs_embeds}
+        else:
+            model_inputs = {"input_ids": input_ids}
+
+        model_inputs.update(
+            {
+                "position_ids": position_ids,
+                "past_key_values": past_key_values,
+                "use_cache": kwargs.get("use_cache"),
+                "attention_mask": attention_mask,
+            }
+        )
+        return model_inputs
+
+    @staticmethod
+    def _reorder_cache(past_key_values, beam_idx):
+        reordered_past = ()
+        for layer_past in past_key_values:
+            reordered_past += (
+                tuple(past_state.index_select(0, beam_idx.to(past_state.device)) for past_state in layer_past),
+            )
+        return reordered_past
+
+
+
+class ZebraInfiniteForCausalLMv2(ZebraPreTrainedModel):
+    def __init__(self, config):
+        super().__init__(config)
+        self.model = ZebraInfiniteModelv2(config)
+        self.latent_size = config.latent_size
+        self.num_mixtures = config.num_mixtures
+        
+        self.mean_head = nn.Linear(config.hidden_size, self.latent_size * self.num_mixtures, bias=False)
+        self.variance_head = nn.Linear(config.hidden_size, self.latent_size * self.num_mixtures, bias=False)
+        self.mix_prob_head = nn.Linear(config.hidden_size, self.latent_size * self.num_mixtures, bias=False)
+        self.softplus = torch.nn.Softplus()
+        # Initialize weights and apply final processing
+        self.post_init()
+
+    def get_input_embeddings(self):
+        return self.model.embed_tokens
+
+    def set_input_embeddings(self, value):
+        self.model.embed_tokens = value
+
+    def get_output_embeddings(self):
+        return self.lm_head
+
+    def set_output_embeddings(self, new_embeddings):
+        self.lm_head = new_embeddings
+
+    def set_decoder(self, decoder):
+        self.model = decoder
+
+    def get_decoder(self):
+        return self.model
+
+    @add_start_docstrings_to_model_forward(ZEBRA_INPUTS_DOCSTRING)
+    @replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
+    def forward(
+        self,
+        input_ids: torch.LongTensor = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[List[torch.FloatTensor]] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        labels: Optional[torch.LongTensor] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+        mu: torch.Tensor = None,
+        sigma: torch.Tensor = None,
+
+    ) -> Union[Tuple, CausalLMOutputWithPast]:
+        r"""
+        Args:
+            labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+                Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
+                config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
+                (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
+
+        Returns:
+
+        Example:
+
+        ```python
+        >>> from transformers import AutoTokenizer, ZebraForCausalLM
+
+        >>> model = ZebraForCausalLM.from_pretrained(PATH_TO_CONVERTED_WEIGHTS)
+        >>> tokenizer = AutoTokenizer.from_pretrained(PATH_TO_CONVERTED_TOKENIZER)
+
+        >>> prompt = "Hey, are you conscious? Can you talk to me?"
+        >>> inputs = tokenizer(prompt, return_tensors="pt")
+
+        >>> # Generate
+        >>> generate_ids = model.generate(inputs.input_ids, max_length=30)
+        >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
+        "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
+        ```"""
+
+        start_time = time.time()
+
+        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+        output_hidden_states = (
+            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        )
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
+        outputs = self.model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+
+        hidden_states = outputs[0]
+        #if mu is not None:
+        #    hidden_states = hidden_states[:, 1:, : ] # we remove the mu token
+        #if sigma is not None:
+        #    hidden_states = hidden_states[:, 1:, : ] # we remove the sigma token
+        #print('hidden_states', hidden_states.shape)
+
+        batch, seqlen , dim = input_ids.shape
+        means = self.mean_head(hidden_states)
+        scales =self.variance_head(hidden_states)  # Ensure scales are positive
+        mix_probs = self.mix_prob_head(hidden_states) # Ensure mixture probabilities sum to 1
+
+        # Reshape the outputs to [batch_size, seq_length, d, k]
+        means = means.view(batch, seqlen, self.latent_size, self.num_mixtures)
+        scales =  self.softplus(scales.view(batch, seqlen, self.latent_size, self.num_mixtures))
+        mix_probs = F.softmax(mix_probs.view(batch, seqlen, self.latent_size, self.num_mixtures), dim = -1 )
+
+        #print('process tokens', time.time() - start_time)
+
+
+        start_time = time.time()
+
+        loss = None
+        if labels is not None:
+            shift_means = means[..., :-1, :, :].contiguous()
+            shift_scales = scales[..., :-1, :, :].contiguous()
+            shift_mix_probs = mix_probs[..., :-1, :, :].contiguous()
+            #     print(shift_means.shape)
+            shift_labels = labels[..., 1:,:].contiguous()
+            loss = self.gmm_neg_log_likelihood( shift_labels, shift_means, shift_scales, shift_mix_probs )
+
+        if not return_dict:
+            output = (means,scales, mix_probs) + outputs[1:]
+            return (loss,) + output if loss is not None else output
+
+        #print('compute loss', time.time() - start_time)
+
+        return CausalLMOutputWithPast(
+            loss=loss,
+            logits=(means,scales, mix_probs),
+            past_key_values=outputs.past_key_values,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+        )
+
+    def gmm_neg_log_likelihood(self, x, means, scales, mix_probs):
+        """
+        Compute the negative log-likelihood of data x under the GMM defined by means, scales, and mix_probs.
+
+        Args:
+        x (Tensor): The ground truth data, shape [batch_size, seq_length, vocab]
+        means (Tensor): Predicted means, shape [batch_size, seq_length, d, k]
+        scales (Tensor): Predicted scales, shape [batch_size, seq_length, d, k]
+        mix_probs (Tensor): Predicted mixture probabilities, shape [batch_size, seq_length, d, k]
+
+        Returns:
+        Tensor: The negative log-likelihood loss
+        """
+        batch_size, seq_length, vocab = x.size()
+        _, _, d, k = means.size()
+        x = x.unsqueeze(-1).expand_as(means)
+
+
+        # Calculate the Gaussian likelihood for each component
+        var = scales ** 2
+        gaussian = torch.exp(-0.5 * ((x - means) ** 2) / var) / (scales * math.sqrt(2 * math.pi))
+
+        # Weighted sum of Gaussian likelihoods for each mixture component
+        weighted_gaussian = gaussian * mix_probs
+        weighted_sum = weighted_gaussian.sum(dim=-1)  # Sum over the mixture components
+
+        # Compute negative log likelihood
+        nll = torch.log(weighted_sum + 1e-6)
+        loss = -nll.mean()  # Mean over all dimensions
+
+        return loss
+
+class ZebraInfiniteModelv2(ZebraPreTrainedModel):
+    """
+    Transformer decoder consisting of *config.num_hidden_layers* layers. Each layer is a [`ZebraDecoderLayer`]
+
+    Args:
+        config: ZebraConfig
+    """
+    def __init__(self, config: ZebraConfig):
+        super().__init__(config)
+        self.padding_idx = config.pad_token_id
+        self.latent_size = config.latent_size
+        self.embed_tokens = nn.Linear(config.latent_size, config.hidden_size, bias=False)
+        self.layers = nn.ModuleList([ZebraDecoderLayer(config) for _ in range(config.num_hidden_layers)])
+        self.norm = ZebraRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.bidirectional = config.bidirectional
+        self.gradient_checkpointing = False
+        # Initialize weights and apply final processing
+        self.post_init()
+
+    def get_input_embeddings(self):
+        return self.embed_tokens
+
+    def set_input_embeddings(self, value):
+        self.embed_tokens = value
+
+    def _prepare_decoder_attention_mask(self, attention_mask, input_shape, inputs_embeds, past_key_values_length):
+        if self.bidirectional:
+            # For bidirectional models, use a different mask that doesn't enforce causality
+            expanded_attn_mask = _expand_mask(attention_mask, inputs_embeds.dtype, tgt_len=input_shape[-1]).to(inputs_embeds.device)
+            return expanded_attn_mask
+        else:
+            # For autoregressive models, use the causal mask
+            combined_attention_mask = None
+            if input_shape[-1] > 1:
+                combined_attention_mask = _make_causal_mask(
+                    input_shape,
+                    inputs_embeds.dtype,
+                    device=inputs_embeds.device,
+                    past_key_values_length=past_key_values_length,
+                )
+
+            if attention_mask is not None:
+                expanded_attn_mask = _expand_mask(attention_mask, inputs_embeds.dtype, tgt_len=input_shape[-1]).to(inputs_embeds.device)
+                combined_attention_mask = (
+                    expanded_attn_mask if combined_attention_mask is None else expanded_attn_mask + combined_attention_mask
+                )
+            return combined_attention_mask
+    # # Copied from transformers.models.bart.modeling_bart.BartDecoder._prepare_decoder_attention_mask
+    # def _prepare_decoder_attention_mask(self, attention_mask, input_shape, inputs_embeds, past_key_values_length):
+    #     # create causal mask
+    #     # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
+    #     combined_attention_mask = None
+    #     if input_shape[-1] > 1:
+    #         combined_attention_mask = _make_causal_mask(
+    #             input_shape,
+    #             inputs_embeds.dtype,
+    #             device=inputs_embeds.device,
+    #             past_key_values_length=past_key_values_length,
+    #         )
+
+    #     if attention_mask is not None:
+    #         # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
+    #         expanded_attn_mask = _expand_mask(attention_mask, inputs_embeds.dtype, tgt_len=input_shape[-1]).to(
+    #             inputs_embeds.device
+    #         )
+    #         combined_attention_mask = (
+    #             expanded_attn_mask if combined_attention_mask is None else expanded_attn_mask + combined_attention_mask
+    #         )
+    #     return combined_attention_mask
+
+    @add_start_docstrings_to_model_forward(ZEBRA_INPUTS_DOCSTRING)
+    def forward(
+        self,
+        input_ids: torch.FloatTensor = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[List[torch.FloatTensor]] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+    ) -> Union[Tuple, BaseModelOutputWithPast]:
+        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+        output_hidden_states = (
+            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        )
+        use_cache = use_cache if use_cache is not None else self.config.use_cache
+
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+
+        # retrieve input_ids and inputs_embeds
+        if input_ids is not None and inputs_embeds is not None:
+            raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
+        elif input_ids is not None:
+            batch_size, seq_length, vocab_dim = input_ids.shape
+        elif inputs_embeds is not None:
+            batch_size, seq_length, _ = inputs_embeds.shape
+        else:
+            raise ValueError("You have to specify either input_ids or inputs_embeds")
+
+        seq_length_with_past = seq_length
+        past_key_values_length = 0
+
+        if inputs_embeds is None:
+            inputs_embeds = self.embed_tokens(input_ids)
+
+
+        if past_key_values is not None:
+            past_key_values_length = past_key_values[0][0].shape[2]
+            seq_length_with_past = seq_length_with_past + past_key_values_length
+
+        if position_ids is None:
+            device = input_ids.device if input_ids is not None else inputs_embeds.device
+            position_ids = torch.arange(
+                past_key_values_length, seq_length + past_key_values_length, dtype=torch.long, device=device
+            )
+            position_ids = position_ids.unsqueeze(0).view(-1, seq_length)
+        else:
+            position_ids = position_ids.view(-1, seq_length).long()
+
+        # embed positions
+        if attention_mask is None:
+            attention_mask = torch.ones(
+                (batch_size, seq_length_with_past), dtype=torch.bool, device=inputs_embeds.device
+            )
+            padding_mask = None
+        else:
+            if 0 in attention_mask:
+                padding_mask = attention_mask
+            else:
+                padding_mask = None
+
+        attention_mask = self._prepare_decoder_attention_mask(
+            attention_mask, (batch_size, seq_length_with_past), inputs_embeds, past_key_values_length
+        )
+
+        # first add min to the first row
+
+        hidden_states = inputs_embeds
+
+        if self.gradient_checkpointing and self.training:
+            if use_cache:
+                logger.warning_once(
+                    "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`..."
+                )
+                use_cache = False
+
+        # decoder layers
+        all_hidden_states = () if output_hidden_states else None
+        all_self_attns = () if output_attentions else None
+        next_decoder_cache = () if use_cache else None
+
+        for idx, decoder_layer in enumerate(self.layers):
+            if output_hidden_states:
+                all_hidden_states += (hidden_states,)
+
+            past_key_value = past_key_values[idx] if past_key_values is not None else None
+
+            if self.gradient_checkpointing and self.training:
+
+                def create_custom_forward(module):
+                    def custom_forward(*inputs):
+                        # None for past_key_value
+                        return module(*inputs, past_key_value, output_attentions, padding_mask=padding_mask)
+
+                    return custom_forward
+
+                layer_outputs = torch.utils.checkpoint.checkpoint(
+                    create_custom_forward(decoder_layer), hidden_states, attention_mask, position_ids
+                )
+            else:
+                layer_outputs = decoder_layer(
+                    hidden_states,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    past_key_value=past_key_value,
+                    output_attentions=output_attentions,
+                    use_cache=use_cache,
+                    padding_mask=padding_mask,
+                )
+
+            hidden_states = layer_outputs[0]
+
+            if use_cache:
+                next_decoder_cache += (layer_outputs[2 if output_attentions else 1],)
+
+            if output_attentions:
+                all_self_attns += (layer_outputs[1],)
+
+        #hidden_states = self.norm(hidden_states)
+
+        # add hidden states from the last decoder layer
+        if output_hidden_states:
+            all_hidden_states += (hidden_states,)
+
+        next_cache = next_decoder_cache if use_cache else None
+        if not return_dict:
+            return tuple(v for v in [hidden_states, next_cache, all_hidden_states, all_self_attns] if v is not None)
+        return BaseModelOutputWithPast(
+            last_hidden_state=hidden_states,
+            past_key_values=next_cache,
+            hidden_states=all_hidden_states,
+            attentions=all_self_attns,
+        )
+
+
+
+class ZebraInfiniteForCausalLMmixed(ZebraPreTrainedModel):
+    def __init__(self, config):
+        super().__init__(config)
+        self.model = ZebraInfiniteModelmixed(config)
+        self.latent_size = config.latent_size
+        self.num_mixtures = config.num_mixtures
+        self.vocab_size = config.vocab_size
+        
+        self.mean_head = nn.Linear(config.hidden_size, self.latent_size * self.num_mixtures, bias=True) #bias=False
+        self.variance_head = nn.Linear(config.hidden_size, self.latent_size * self.num_mixtures, bias=True)
+        self.mix_prob_head = nn.Linear(config.hidden_size, self.latent_size * self.num_mixtures, bias=True)
+        self.softplus = torch.nn.Softplus()
+        self.vocab_head = nn.Linear(config.hidden_size, self.vocab_size, bias=True)
+        # Initialize weights and apply final processing
+        self.post_init()
+        self.rel_loss = RelativeL2()
+
+    def get_input_embeddings(self):
+        return self.model.embed_tokens
+
+    def set_input_embeddings(self, value):
+        self.model.embed_tokens = value
+
+    def get_output_embeddings(self):
+        return self.lm_head
+
+    def set_output_embeddings(self, new_embeddings):
+        self.lm_head = new_embeddings
+
+    def set_decoder(self, decoder):
+        self.model = decoder
+
+    def get_decoder(self):
+        return self.model
+
+    @add_start_docstrings_to_model_forward(ZEBRA_INPUTS_DOCSTRING)
+    @replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
+    def forward(
+        self,
+        input_ids: torch.LongTensor = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[List[torch.FloatTensor]] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        labels: Optional[torch.LongTensor] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+        scale_tokens: torch.Tensor = None,
+        weight_logits=1.0,
+
+    ) -> Union[Tuple, CausalLMOutputWithPast]:
+        r"""
+        Args:
+            labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+                Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
+                config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
+                (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
+
+        Returns:
+
+        Example:
+
+        ```python
+        >>> from transformers import AutoTokenizer, ZebraForCausalLM
+
+        >>> model = ZebraForCausalLM.from_pretrained(PATH_TO_CONVERTED_WEIGHTS)
+        >>> tokenizer = AutoTokenizer.from_pretrained(PATH_TO_CONVERTED_TOKENIZER)
+
+        >>> prompt = "Hey, are you conscious? Can you talk to me?"
+        >>> inputs = tokenizer(prompt, return_tensors="pt")
+
+        >>> # Generate
+        >>> generate_ids = model.generate(inputs.input_ids, max_length=30)
+        >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
+        "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
+        ```"""
+
+        start_time = time.time()
+
+        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+        output_hidden_states = (
+            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        )
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
+        outputs = self.model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+            scale_tokens=scale_tokens
+        )
+
+        hidden_states = outputs[0]
+        #if mu is not None:
+        #    hidden_states = hidden_states[:, 1:, : ] # we remove the mu token
+        #if sigma is not None:
+        #    hidden_states = hidden_states[:, 1:, : ] # we remove the sigma token
+        #print('hidden_states', hidden_states.shape)
+
+        batch, seqlen , dim = input_ids.shape
+        means = self.mean_head(hidden_states)
+        scales =self.variance_head(hidden_states)  # Ensure scales are positive
+        mix_probs = self.mix_prob_head(hidden_states) # Ensure mixture probabilities sum to 1
+        logits_vocab = self.vocab_head(hidden_states)
+
+        # Reshape the outputs to [batch_size, seq_length, d, k]
+        means = means.view(batch, seqlen, self.latent_size, self.num_mixtures)
+        scales =  self.softplus(scales.view(batch, seqlen, self.latent_size, self.num_mixtures))
+        mix_probs = F.softmax(mix_probs.view(batch, seqlen, self.latent_size, self.num_mixtures), dim = -1 )
+        logits_vocab = F.softmax(logits_vocab, dim = -1 )
+
+
+        #print('process tokens', time.time() - start_time)
+
+
+        start_time = time.time()
+
+        loss = None
+        if labels is not None:
+            shift_means = means[..., :-1, :, :].contiguous()
+            shift_scales = scales[..., :-1, :, :].contiguous()
+            shift_mix_probs = mix_probs[..., :-1, :, :].contiguous()
+            #     print(shift_means.shape)
+            shift_labels = labels[..., 1:,:].contiguous()
+            #loss = self.gmm_neg_log_likelihood( shift_labels, shift_means, shift_scales, shift_mix_probs )
+            loss = ((shift_means[..., 0] - shift_labels)**2).mean()
+            loss = self.rel_loss(shift_means[..., 0], shift_labels)
+            #print(scale_tokens.shape, logits_vocab.shape)
+            shift_logits_vocab = logits_vocab[..., :-1, :].contiguous() 
+            shift_labels_vocab = scale_tokens[..., 1:].contiguous()
+            loss_fct = CrossEntropyLoss()
+            #shift_logits = shift_logits.view(-1, self.config.vocab_size)
+            #shift_labels = shift_labels.view(-1)
+            # Enable model parallelism
+            loss += weight_logits*loss_fct(shift_logits_vocab.view(-1, self.vocab_size), shift_labels_vocab.view(-1)) 
+
+        if not return_dict:
+            output = (means,scales, mix_probs) + outputs[1:]
+            return (loss,) + output if loss is not None else output
+
+        #print('compute loss', time.time() - start_time)
+
+        return CausalLMOutputWithPast(
+            loss=loss,
+            logits=(means,scales, mix_probs, logits_vocab),
+            past_key_values=outputs.past_key_values,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+        )
+
+    def gmm_neg_log_likelihood(self, x, means, scales, mix_probs):
+        """
+        Compute the negative log-likelihood of data x under the GMM defined by means, scales, and mix_probs.
+
+        Args:
+        x (Tensor): The ground truth data, shape [batch_size, seq_length, vocab]
+        means (Tensor): Predicted means, shape [batch_size, seq_length, d, k]
+        scales (Tensor): Predicted scales, shape [batch_size, seq_length, d, k]
+        mix_probs (Tensor): Predicted mixture probabilities, shape [batch_size, seq_length, d, k]
+
+        Returns:
+        Tensor: The negative log-likelihood loss
+        """
+        batch_size, seq_length, vocab = x.size()
+        _, _, d, k = means.size()
+        x = x.unsqueeze(-1).expand_as(means)
+
+
+        # Calculate the Gaussian likelihood for each component
+        var = scales ** 2
+        gaussian = torch.exp(-0.5 * ((x - means) ** 2) / var) / (scales * math.sqrt(2 * math.pi))
+
+        # Weighted sum of Gaussian likelihoods for each mixture component
+        weighted_gaussian = gaussian * mix_probs
+        weighted_sum = weighted_gaussian.sum(dim=-1)  # Sum over the mixture components
+
+        # Compute negative log likelihood
+        nll = torch.log(weighted_sum + 1e-6)
+        loss = -nll.mean()  # Mean over all dimensions
+
+        return loss
+
+class ZebraInfiniteModelmixed(ZebraPreTrainedModel):
+    """
+    Transformer decoder consisting of *config.num_hidden_layers* layers. Each layer is a [`ZebraDecoderLayer`]
+
+    Args:
+        config: ZebraConfig
+    """
+    def __init__(self, config: ZebraConfig):
+        super().__init__(config)
+        self.padding_idx = config.pad_token_id
+        self.latent_size = config.latent_size
+        self.embed_vocab = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
+        self.embed_tokens = nn.Linear(config.latent_size, config.hidden_size, bias=True)
+        self.layers = nn.ModuleList([ZebraDecoderLayer(config) for _ in range(config.num_hidden_layers)])
+        self.norm = ZebraRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.bidirectional = config.bidirectional
+        self.gradient_checkpointing = False
+        # Initialize weights and apply final processing
+        self.post_init()
+
+    def get_input_embeddings(self):
+        return self.embed_tokens
+
+    def set_input_embeddings(self, value):
+        self.embed_tokens = value
+
+    def _prepare_decoder_attention_mask(self, attention_mask, input_shape, inputs_embeds, past_key_values_length):
+        if self.bidirectional:
+            # For bidirectional models, use a different mask that doesn't enforce causality
+            expanded_attn_mask = _expand_mask(attention_mask, inputs_embeds.dtype, tgt_len=input_shape[-1]).to(inputs_embeds.device)
+            return expanded_attn_mask
+        else:
+            # For autoregressive models, use the causal mask
+            combined_attention_mask = None
+            if input_shape[-1] > 1:
+                combined_attention_mask = _make_causal_mask(
+                    input_shape,
+                    inputs_embeds.dtype,
+                    device=inputs_embeds.device,
+                    past_key_values_length=past_key_values_length,
+                )
+
+            if attention_mask is not None:
+                expanded_attn_mask = _expand_mask(attention_mask, inputs_embeds.dtype, tgt_len=input_shape[-1]).to(inputs_embeds.device)
+                combined_attention_mask = (
+                    expanded_attn_mask if combined_attention_mask is None else expanded_attn_mask + combined_attention_mask
+                )
+            return combined_attention_mask
+    # # Copied from transformers.models.bart.modeling_bart.BartDecoder._prepare_decoder_attention_mask
+    # def _prepare_decoder_attention_mask(self, attention_mask, input_shape, inputs_embeds, past_key_values_length):
+    #     # create causal mask
+    #     # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
+    #     combined_attention_mask = None
+    #     if input_shape[-1] > 1:
+    #         combined_attention_mask = _make_causal_mask(
+    #             input_shape,
+    #             inputs_embeds.dtype,
+    #             device=inputs_embeds.device,
+    #             past_key_values_length=past_key_values_length,
+    #         )
+
+    #     if attention_mask is not None:
+    #         # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
+    #         expanded_attn_mask = _expand_mask(attention_mask, inputs_embeds.dtype, tgt_len=input_shape[-1]).to(
+    #             inputs_embeds.device
+    #         )
+    #         combined_attention_mask = (
+    #             expanded_attn_mask if combined_attention_mask is None else expanded_attn_mask + combined_attention_mask
+    #         )
+    #     return combined_attention_mask
+
+    @add_start_docstrings_to_model_forward(ZEBRA_INPUTS_DOCSTRING)
+    def forward(
+        self,
+        input_ids: torch.FloatTensor = None,
+        scale_tokens: torch.LongTensor=None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[List[torch.FloatTensor]] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+    ) -> Union[Tuple, BaseModelOutputWithPast]:
+        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+        output_hidden_states = (
+            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        )
+        use_cache = use_cache if use_cache is not None else self.config.use_cache
+
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+
+        # retrieve input_ids and inputs_embeds
+        if input_ids is not None and inputs_embeds is not None:
+            raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
+        elif input_ids is not None:
+            batch_size, seq_length, vocab_dim = input_ids.shape
+        elif inputs_embeds is not None:
+            batch_size, seq_length, _ = inputs_embeds.shape
+        else:
+            raise ValueError("You have to specify either input_ids or inputs_embeds")
+
+        seq_length_with_past = seq_length
+        past_key_values_length = 0
+
+        if inputs_embeds is None:
+            inputs_embeds = self.embed_tokens(input_ids)
+
+
+        if past_key_values is not None:
+            past_key_values_length = past_key_values[0][0].shape[2]
+            seq_length_with_past = seq_length_with_past + past_key_values_length
+
+        if position_ids is None:
+            device = input_ids.device if input_ids is not None else inputs_embeds.device
+            position_ids = torch.arange(
+                past_key_values_length, seq_length + past_key_values_length, dtype=torch.long, device=device
+            )
+            position_ids = position_ids.unsqueeze(0).view(-1, seq_length)
+        else:
+            position_ids = position_ids.view(-1, seq_length).long()
+
+        # embed positions
+        if attention_mask is None:
+            attention_mask = torch.ones(
+                (batch_size, seq_length_with_past), dtype=torch.bool, device=inputs_embeds.device
+            )
+            padding_mask = None
+        else:
+            if 0 in attention_mask:
+                padding_mask = attention_mask
+            else:
+                padding_mask = None
+
+        attention_mask = self._prepare_decoder_attention_mask(
+            attention_mask, (batch_size, seq_length_with_past), inputs_embeds, past_key_values_length
+        )
+
+        # first add min to the first row
+        #print(inputs_embeds.shape)
+        #print(self.embed_vocab(scale_tokens).shape)
+        #print(scale_tokens.shape)
+
+        hidden_states = inputs_embeds + self.embed_vocab(scale_tokens)
+
+        if self.gradient_checkpointing and self.training:
+            if use_cache:
+                logger.warning_once(
+                    "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`..."
+                )
+                use_cache = False
+
+        # decoder layers
+        all_hidden_states = () if output_hidden_states else None
+        all_self_attns = () if output_attentions else None
+        next_decoder_cache = () if use_cache else None
+
+        for idx, decoder_layer in enumerate(self.layers):
+            if output_hidden_states:
+                all_hidden_states += (hidden_states,)
+
+            past_key_value = past_key_values[idx] if past_key_values is not None else None
+
+            if self.gradient_checkpointing and self.training:
+
+                def create_custom_forward(module):
+                    def custom_forward(*inputs):
+                        # None for past_key_value
+                        return module(*inputs, past_key_value, output_attentions, padding_mask=padding_mask)
+
+                    return custom_forward
+
+                layer_outputs = torch.utils.checkpoint.checkpoint(
+                    create_custom_forward(decoder_layer), hidden_states, attention_mask, position_ids
+                )
+            else:
+                layer_outputs = decoder_layer(
+                    hidden_states,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    past_key_value=past_key_value,
+                    output_attentions=output_attentions,
+                    use_cache=use_cache,
+                    padding_mask=padding_mask,
+                )
+
+            hidden_states = layer_outputs[0]
+
+            if use_cache:
+                next_decoder_cache += (layer_outputs[2 if output_attentions else 1],)
+
+            if output_attentions:
+                all_self_attns += (layer_outputs[1],)
+
+        hidden_states = self.norm(hidden_states)
+
+        # add hidden states from the last decoder layer
+        if output_hidden_states:
+            all_hidden_states += (hidden_states,)
+
+        next_cache = next_decoder_cache if use_cache else None
+        if not return_dict:
+            return tuple(v for v in [hidden_states, next_cache, all_hidden_states, all_self_attns] if v is not None)
+        return BaseModelOutputWithPast(
+            last_hidden_state=hidden_states,
+            past_key_values=next_cache,
+            hidden_states=all_hidden_states,
+            attentions=all_self_attns,
+        )
+
+
+class RelativeL2(torch.nn.Module):
+    def forward(self, x, y):
+        x = rearrange(x, "b ... -> b (...)")
+        y = rearrange(y, "b ... -> b (...)")
+        diff_norms = torch.linalg.norm(x - y, ord=2, dim=-1)
+        y_norms = torch.linalg.norm(y, ord=2, dim=-1)
+        return (diff_norms / y_norms).mean()
